@@ -2,18 +2,19 @@
 pragma solidity ^0.8.17;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Event} from "./Event.sol";
 
-contract CollateralManager {
+contract CollateralManager is ReentrancyGuard {
     // address public protocolFeeRecipient;
-    uint256 private _bettingMultiplier = 5; // Example multiplier
+    uint256 private _bettingMultiplier = 5;
 
     IERC20 public collateralToken;
 
     // Mapping from event address to collateral amount
     mapping(address => uint256) public collateralBalances; // Key: eventAddress
     mapping(address => bool) public isCollateralLocked; // Key: eventAddress
-    mapping(address => uint256) public trustedCreatorsMultiplier; // Key: creator
+    mapping(address => int256) public creatorsTrustMultiplier; // Key: creator
 
     // For simplicity, assume protocol fee recipient can manage disputes
     address public governance;
@@ -37,10 +38,7 @@ contract CollateralManager {
     }
 
     modifier onlyEvent(address _eventAddress) {
-        require(
-            msg.sender == _eventAddress,
-            "Only event contract can call"
-        );
+        require(msg.sender == _eventAddress, "Only event contract can call");
         _;
     }
 
@@ -133,7 +131,7 @@ contract CollateralManager {
      */
     function claimCollateral(
         address _eventAddress
-    ) external onlyEventCreator(_eventAddress) {
+    ) external onlyEventCreator(_eventAddress) nonReentrant {
         Event _event = Event(_eventAddress);
         require(
             block.timestamp > _event.disputeDeadline(),
@@ -153,9 +151,13 @@ contract CollateralManager {
         releaseCollateral(address(this));
     }
 
+    /**
+     * @notice Allows the event creator to cancel an open event.
+     * @param _eventAddress The address of the event contract.
+     */
     function cancelEvent(
         address _eventAddress
-    ) external onlyEventCreator(_eventAddress) {
+    ) external onlyEventCreator(_eventAddress) nonReentrant {
         Event _event = Event(_eventAddress);
         require(
             _event.status() == Event.EventStatus.Open,
@@ -168,7 +170,15 @@ contract CollateralManager {
         releaseCollateral(_eventAddress);
     }
 
-    function resolveDsipute(address _eventAddress, uint256 _finalOutCome) external onlyGovernance {
+    /**
+     * @notice Allows governance to resolve a dispute.
+     * @param _eventAddress The address of the event contract.
+     * @param _finalOutCome The final outcome of the event.
+     */
+    function resolveDispute(
+        address _eventAddress,
+        uint256 _finalOutCome
+    ) external onlyGovernance nonReentrant {
         Event _event = Event(_eventAddress);
         require(
             _event.disputeStatus() == Event.DisputeStatus.Disputed,
@@ -177,12 +187,11 @@ contract CollateralManager {
 
         if (_finalOutCome != _event.winningOutcome()) {
             forfeitCollateral(_eventAddress);
+        } else {
+            releaseCollateral(_eventAddress);
         }
 
         _event.resolveDispute(_finalOutCome);
-
-        // Release collateral back to the creator
-        releaseCollateral(_eventAddress);
     }
 
     /**
@@ -205,6 +214,9 @@ contract CollateralManager {
 
         collateralBalances[_eventAddress] = 0;
         isCollateralLocked[_eventAddress] = false;
+        creatorsTrustMultiplier[eventContract.creator()] =
+            creatorsTrustMultiplier[eventContract.creator()] +
+            1;
 
         // Transfer collateral back to the creator
         collateralToken.transfer(Event(_eventAddress).creator(), amount);
@@ -218,6 +230,7 @@ contract CollateralManager {
      * @param _eventAddress The address of the event contract.
      */
     function forfeitCollateral(address _eventAddress) internal {
+        Event eventContract = Event(_eventAddress);
         require(
             isCollateralLocked[_eventAddress],
             "No collateral to forfeit for this event"
@@ -235,17 +248,23 @@ contract CollateralManager {
         ) {
             collateralToken.transfer(
                 Event(_eventAddress).disputingUser(),
-                amount / 10
+                protocolDisputeFee
             );
-            amount = amount - protocolDisputeFee;
+        }
+
+        if (creatorsTrustMultiplier[eventContract.creator()] > 0) {
+            creatorsTrustMultiplier[eventContract.creator()] = -1;
+        } else {
+            creatorsTrustMultiplier[eventContract.creator()] =
+                creatorsTrustMultiplier[eventContract.creator()] -
+                1;
         }
 
         // Transfer collateral to protocol fee recipient
         collateralToken.transfer(governance, protocolDisputeFee);
-        amount = amount - protocolDisputeFee;
 
         // Burn remaining collateral
-        collateralToken.transfer(address(0), amount);
+        collateralToken.transfer(address(0), amount - (2 * protocolDisputeFee));
 
         closeEvent(_eventAddress);
         emit CollateralForfeited(_eventAddress, amount);
@@ -254,12 +273,15 @@ contract CollateralManager {
     /**
      * @notice Returns the betting multiplier.
      */
-    function bettingMultiplier(
-        address creator
+    function computeBetLimit(
+        address creator,
+        uint256 collateralAmount
     ) external view returns (uint256) {
-        if (trustedCreatorsMultiplier[creator] > 0)
-            return trustedCreatorsMultiplier[creator];
-        return _bettingMultiplier;
+        int256 creatorMultiplier = creatorsTrustMultiplier[creator];
+        if (creatorMultiplier > 0)
+            return uint256(creatorMultiplier) * _bettingMultiplier * collateralAmount;
+        else if (creatorMultiplier == -1) return collateralAmount / 2;
+        else return _bettingMultiplier;
     }
 
     /**

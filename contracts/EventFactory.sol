@@ -7,37 +7,49 @@ import "./CollateralManager.sol";
 contract EventFactory {
     address public collateralManager;
     address[] public allEvents;
+    address public bettingToken;
 
-    event EventCreated(address indexed eventAddress, address indexed creator, uint256 eventId);
+    event EventCreated(
+        address indexed eventAddress,
+        address indexed creator,
+        uint256 eventId
+    );
 
     constructor(address _collateralManager) {
         collateralManager = _collateralManager;
     }
 
     function createEvent(
+        string memory _title,
         string memory _description,
+        string memory _category,
         string[] memory _outcomes,
         uint256 _startTime,
         uint256 _endTime,
-        uint256 _collateralAmount,
-        address _bettingToken
+        uint256 _collateralAmount
     ) external returns (address eventAddress, uint256 eventId) {
         // Deploy a new Event contract
         Event newEvent = new Event(
+            _title,
             _description,
+            _category,
             _outcomes,
             _startTime,
             _endTime,
             msg.sender,
             _collateralAmount,
             collateralManager,
-            _bettingToken
+            bettingToken
         );
 
         eventAddress = address(newEvent);
 
         // Transfer collateral from the creator to the CollateralManager for this event
-        CollateralManager(collateralManager).lockCollateral(eventAddress, msg.sender, _collateralAmount);
+        CollateralManager(collateralManager).lockCollateral(
+            eventAddress,
+            msg.sender,
+            _collateralAmount
+        );
 
         eventId = allEvents.length;
         allEvents.push(eventAddress);
@@ -68,7 +80,9 @@ contract EventFactory {
         return openEvents;
     }
 
-    function getEvent(uint256 eventId) external view returns (address eventAddress) {
+    function getEvent(
+        uint256 eventId
+    ) external view returns (address eventAddress) {
         require(eventId < allEvents.length, "Invalid event ID");
         return allEvents[eventId];
     }
