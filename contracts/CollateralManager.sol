@@ -65,21 +65,18 @@ contract CollateralManager is ReentrancyGuard {
      */
     function closeEvent(
         address _eventAddress
-    ) internal onlyEventCreator(_eventAddress) {
+    ) internal {
         Event eventContract = Event(_eventAddress);
 
         // Ensure the event is still open and the end time has passed
         require(
-            eventContract.status() == Event.EventStatus.Resolved,
-            "Event is not resolved"
-        );
-        require(
-            block.timestamp > eventContract.endTime(),
-            "Event has not ended yet"
+            eventContract.status() == Event.EventStatus.Resolved ||
+                eventContract.status() == Event.EventStatus.Cancelled,
+            "Event is not resolved or cancelled"
         );
 
-        // Call closeEvent on the Event contract
-        eventContract.closeEvent();
+        if (eventContract.status() == Event.EventStatus.Resolved)
+            eventContract.closeEvent();
 
         emit EventClosed(_eventAddress);
     }
@@ -148,9 +145,12 @@ contract CollateralManager is ReentrancyGuard {
             block.timestamp > _event.disputeDeadline(),
             "Dispute period not over"
         );
+
+        // Ensure the event is resolved or canceled
         require(
-            _event.status() == Event.EventStatus.Resolved,
-            "Event is not resolved"
+            _event.status() == Event.EventStatus.Resolved ||
+                _event.status() == Event.EventStatus.Cancelled,
+            "Event is not resolved or canceled"
         );
 
         // Transfer fee to governance and creator
@@ -159,7 +159,7 @@ contract CollateralManager is ReentrancyGuard {
         _event.bettingToken().transfer(_event.creator(), fee / 2);
 
         // Release collateral to the creator
-        releaseCollateral(address(this));
+        releaseCollateral(_eventAddress);
     }
 
     /**
@@ -196,13 +196,15 @@ contract CollateralManager is ReentrancyGuard {
             "Event is not disputed"
         );
 
+        // Update the dispute status in the Event contract before proceeding
+        _event.resolveDispute(_finalOutCome);
+
+        // Now you can safely release or forfeit collateral
         if (_finalOutCome != _event.winningOutcome()) {
             forfeitCollateral(_eventAddress);
         } else {
             releaseCollateral(_eventAddress);
         }
-
-        _event.resolveDispute(_finalOutCome);
     }
 
     /**
