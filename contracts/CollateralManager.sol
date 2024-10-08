@@ -4,10 +4,11 @@ pragma solidity ^0.8.17;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Event} from "./Event.sol";
+import "./Governance.sol";
 
 contract CollateralManager is ReentrancyGuard {
-    // address public protocolFeeRecipient;
-    uint256 private _bettingMultiplier = 5;
+    address public protocolFeeRecipient;
+    uint256 public bettingMultiplier = 5;
 
     IERC20 public collateralToken;
 
@@ -17,35 +18,45 @@ contract CollateralManager is ReentrancyGuard {
     mapping(address => int256) public creatorsTrustMultiplier; // Key: creator
 
     // For simplicity, assume protocol fee recipient can manage disputes
-    address public governance;
+    Governance public governance;
 
     event CollateralLocked(address indexed eventAddress, uint256 amount);
     event CollateralReleased(address indexed eventAddress, uint256 amount);
     event CollateralForfeited(address indexed eventAddress, uint256 amount);
     event EventClosed(address indexed eventAddress);
 
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "Only governance can call");
+    modifier onlyOwner() {
+        require(
+            msg.sender == governance.owner(),
+            "CollateralManager: Only owner can call"
+        );
+        _;
+    }
+
+    modifier onlyApprovedAdmin() {
+        require(
+            governance.approvedAdmins(msg.sender),
+            "CollateralManager: Only approved admin can call"
+        );
         _;
     }
 
     modifier onlyEventCreator(address _eventAddress) {
         require(
             msg.sender == Event(_eventAddress).creator(),
-            "Only event creator can call"
+            "CollateralManager: Only event creator can call"
         );
         _;
     }
 
-    modifier onlyEvent(address _eventAddress) {
-        require(msg.sender == _eventAddress, "Only event contract can call");
-        _;
-    }
-
-    constructor(address _collateralToken, address _governance) {
-        // protocolFeeRecipient = _protocolFeeRecipient;
+    constructor(
+        address _collateralToken,
+        address _governance,
+        address _protocolFeeRecipient
+    ) {
+        protocolFeeRecipient = _protocolFeeRecipient;
         collateralToken = IERC20(_collateralToken);
-        governance = _governance;
+        governance = Governance(_governance);
     }
 
     /**
@@ -144,7 +155,7 @@ contract CollateralManager is ReentrancyGuard {
 
         // Transfer fee to governance and creator
         uint256 fee = _event.calculateFee();
-        _event.bettingToken().transfer(governance, fee / 2);
+        _event.bettingToken().transfer(protocolFeeRecipient, fee / 2);
         _event.bettingToken().transfer(_event.creator(), fee / 2);
 
         // Release collateral to the creator
@@ -178,7 +189,7 @@ contract CollateralManager is ReentrancyGuard {
     function resolveDispute(
         address _eventAddress,
         uint256 _finalOutCome
-    ) external onlyGovernance nonReentrant {
+    ) external onlyApprovedAdmin nonReentrant {
         Event _event = Event(_eventAddress);
         require(
             _event.disputeStatus() == Event.DisputeStatus.Disputed,
@@ -261,7 +272,7 @@ contract CollateralManager is ReentrancyGuard {
         }
 
         // Transfer collateral to protocol fee recipient
-        collateralToken.transfer(governance, protocolDisputeFee);
+        collateralToken.transfer(protocolFeeRecipient, protocolDisputeFee);
 
         // Burn remaining collateral
         collateralToken.transfer(address(0), amount - (2 * protocolDisputeFee));
@@ -278,40 +289,40 @@ contract CollateralManager is ReentrancyGuard {
         uint256 collateralAmount
     ) external view returns (uint256) {
         int256 creatorMultiplier = creatorsTrustMultiplier[creator];
-        if (creatorMultiplier > 0)
-            return uint256(creatorMultiplier) * _bettingMultiplier * collateralAmount;
-        else if (creatorMultiplier == -1) return collateralAmount / 2;
-        else return _bettingMultiplier;
+
+        if (creatorMultiplier < -1)
+            return collateralAmount / uint256(creatorMultiplier * -1);
+        else if (creatorMultiplier == -1) return collateralAmount;
+        else if (creatorMultiplier == 0)
+            return bettingMultiplier * collateralAmount;
+        return
+            uint256(creatorMultiplier) * bettingMultiplier * collateralAmount;
     }
 
     /**
      * @notice Allows governance to set a new betting multiplier.
      * @param _newMultiplier The new betting multiplier.
      */
-    function setBettingMultiplier(
-        uint256 _newMultiplier
-    ) external onlyGovernance {
+    function setBettingMultiplier(uint256 _newMultiplier) external onlyOwner {
         require(_newMultiplier > 0, "Multiplier must be greater than zero");
-        _bettingMultiplier = _newMultiplier;
+        bettingMultiplier = _newMultiplier;
     }
 
-    // /**
-    //  * @notice Allows governance to update the protocol fee recipient.
-    //  * @param _newRecipient The address of the new fee recipient.
-    //  */
-    // function setProtocolFeeRecipient(address _newRecipient) external onlyGovernance {
-    //     require(_newRecipient != address(0), "Invalid address");
-    //     protocolFeeRecipient = _newRecipient;
-    // }
+    /**
+     * @notice Allows governance to update the protocol fee recipient.
+     * @param _newRecipient The address of the new fee recipient.
+     */
+    function setProtocolFeeRecipient(address _newRecipient) external onlyOwner {
+        require(_newRecipient != address(0), "Invalid address");
+        protocolFeeRecipient = _newRecipient;
+    }
 
     /**
      * @notice Allows governance to transfer governance rights.
      * @param _newGovernance The address of the new governance.
      */
-    function transferGovernance(
-        address _newGovernance
-    ) external onlyGovernance {
+    function transferGovernance(address _newGovernance) external onlyOwner {
         require(_newGovernance != address(0), "Invalid address");
-        governance = _newGovernance;
+        governance = Governance(_newGovernance);
     }
 }

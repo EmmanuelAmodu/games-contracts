@@ -81,14 +81,6 @@ contract Event is ReentrancyGuard {
         _;
     }
 
-    modifier onlyGovernance() {
-        require(
-            msg.sender == CollateralManager(collateralManager).governance(),
-            "Only governance can call"
-        );
-        _;
-    }
-
     constructor(
         string memory _title,
         string memory _description,
@@ -333,7 +325,7 @@ contract Event is ReentrancyGuard {
             bettingToken.transfer(creator, disputeCollateral / 2);
             // 50% User's collateral is transferred to the governance
             bettingToken.transfer(
-                CollateralManager(collateralManager).governance(),
+                CollateralManager(collateralManager).protocolFeeRecipient(),
                 disputeCollateral / 2
             );
         }
