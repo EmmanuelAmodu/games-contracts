@@ -3,11 +3,13 @@ pragma solidity ^0.8.17;
 
 import "./Event.sol";
 import "./CollateralManager.sol";
+import "./Governance.sol";
 
 contract EventFactory {
     address public collateralManager;
     address[] public allEvents;
     address public bettingToken;
+    Governance public governance;
 
     event EventCreated(
         address indexed eventAddress,
@@ -15,8 +17,17 @@ contract EventFactory {
         uint256 eventId
     );
 
-    constructor(address _collateralManager) {
+    modifier onlyOwner() {
+        require(
+            msg.sender == governance.owner(),
+            "CollateralManager: Only owner can call"
+        );
+        _;
+    }
+
+    constructor(address _collateralManager, address _governance) {
         collateralManager = _collateralManager;
+        governance = Governance(_governance);
     }
 
     function createEvent(
@@ -85,5 +96,9 @@ contract EventFactory {
     ) external view returns (address eventAddress) {
         require(eventId < allEvents.length, "Invalid event ID");
         return allEvents[eventId];
+    }
+
+    function setBettingToken(address _bettingToken) external onlyOwner {
+        bettingToken = _bettingToken;
     }
 }
