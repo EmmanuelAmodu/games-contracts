@@ -23,10 +23,7 @@ contract DeployScript is Script {
         );
 
         // Deploy EventFactory
-        EventFactory eventFactory = new EventFactory(
-            address(collateralManager),
-            address(governance)
-        );
+        EventFactory eventFactory = new EventFactory(address(collateralManager), address(governance));
 
         console.log("Governance deployed at:", address(governance));
         console.log("CollateralManager deployed at:", address(collateralManager));

@@ -65,10 +65,7 @@ contract Event is ReentrancyGuard {
     }
 
     modifier onlyCollateralManager() {
-        require(
-            msg.sender == collateralManager,
-            "Only collateral manager can call"
-        );
+        require(msg.sender == collateralManager, "Only collateral manager can call");
         _;
     }
 
@@ -109,8 +106,7 @@ contract Event is ReentrancyGuard {
         bettingToken = IERC20(_bettingToken);
 
         // Calculate betting limit
-        bettingLimit = CollateralManager(collateralManager)
-            .computeBetLimit(creator, _collateralAmount);
+        bettingLimit = CollateralManager(collateralManager).computeBetLimit(creator, _collateralAmount);
     }
 
     /**
@@ -118,14 +114,8 @@ contract Event is ReentrancyGuard {
      * @param _outcomeIndex Outcome to bet against
      * @param _amount Amount to bet
      */
-    function placeBet(
-        uint256 _outcomeIndex,
-        uint256 _amount
-    ) external inStatus(EventStatus.Open) {
-        require(
-            block.timestamp >= startTime && block.timestamp <= endTime,
-            "Betting is closed"
-        );
+    function placeBet(uint256 _outcomeIndex, uint256 _amount) external inStatus(EventStatus.Open) {
+        require(block.timestamp >= startTime && block.timestamp <= endTime, "Betting is closed");
         require(totalStaked + _amount <= bettingLimit, "Betting limit reached");
         require(_outcomeIndex < outcomes.length, "Invalid outcome index");
         require(_amount > 0, "Bet amount must be greater than zero");
@@ -144,21 +134,14 @@ contract Event is ReentrancyGuard {
      * @notice Sets the protocol fee percentage. Can only be called by the governance.
      * @param _collateralAmount The new protocol fee percentage.
      */
-    function setBetLimit(
-        uint256 _collateralAmount
-    ) external onlyCollateralManager {
-        bettingLimit = CollateralManager(collateralManager)
-            .computeBetLimit(creator, _collateralAmount);
+    function setBetLimit(uint256 _collateralAmount) external onlyCollateralManager {
+        bettingLimit = CollateralManager(collateralManager).computeBetLimit(creator, _collateralAmount);
     }
 
     /**
      * @notice Closes the event for betting. Can only be called by the Collateral Manager.
      */
-    function closeEvent()
-        external
-        inStatus(EventStatus.Resolved)
-        onlyCollateralManager
-    {
+    function closeEvent() external inStatus(EventStatus.Resolved) onlyCollateralManager {
         require(block.timestamp > endTime, "Event has not ended yet");
         require(status == EventStatus.Resolved, "Event not resolved");
 
@@ -170,9 +153,7 @@ contract Event is ReentrancyGuard {
      * @notice Submits the outcome of the event. Collateral is not released immediately.
      * @param _winningOutcome The index of the winning outcome.
      */
-    function submitOutcome(
-        uint256 _winningOutcome
-    ) external inStatus(EventStatus.Open) onlyCreator {
+    function submitOutcome(uint256 _winningOutcome) external inStatus(EventStatus.Open) onlyCreator {
         require(block.timestamp > endTime, "Event has not ended yet");
         require(_winningOutcome < outcomes.length, "Invalid outcome index");
         winningOutcome = _winningOutcome;
@@ -190,9 +171,7 @@ contract Event is ReentrancyGuard {
      * @notice Allows users to create a dispute within 1 hours after the outcome is submitted.
      * @param _reason A brief reason for the dispute.
      */
-    function createDispute(
-        string calldata _reason
-    ) external inStatus(EventStatus.Resolved) nonReentrant {
+    function createDispute(string calldata _reason) external inStatus(EventStatus.Resolved) nonReentrant {
         require(block.timestamp <= disputeDeadline, "Dispute period has ended");
         require(disputeStatus == DisputeStatus.None, "Dispute already raised");
 
@@ -208,10 +187,7 @@ contract Event is ReentrancyGuard {
         require(hasBet, "Only participants can dispute");
 
         disputeCollateral = (totalStaked * 10) / 100; // 10% of total staked
-        require(
-            bettingToken.balanceOf(msg.sender) >= disputeCollateral,
-            "Insufficient balance to create dispute"
-        );
+        require(bettingToken.balanceOf(msg.sender) >= disputeCollateral, "Insufficient balance to create dispute");
 
         bettingToken.transferFrom(msg.sender, address(this), disputeCollateral);
         disputeStatus = DisputeStatus.Disputed;
@@ -224,16 +200,9 @@ contract Event is ReentrancyGuard {
     /**
      * @notice Allows users who bet on the winning outcome to claim their payouts.
      */
-    function claimPayout()
-        external
-        inStatus(EventStatus.Resolved)
-        nonReentrant
-    {
+    function claimPayout() external inStatus(EventStatus.Resolved) nonReentrant {
         require(block.timestamp > disputeDeadline, "Dispute period not over");
-        require(
-            disputeStatus != DisputeStatus.Disputed,
-            "Dispute is unresolved"
-        );
+        require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
         require(!hasClaimed[msg.sender], "Payout already claimed");
 
         uint256 userStake = userBets[msg.sender][winningOutcome];
@@ -244,9 +213,7 @@ contract Event is ReentrancyGuard {
         uint256 fee = (loot * protocolFeePercentage) / 100;
         uint256 netLoot = loot - fee;
 
-        uint256 userPayout = userStake +
-            (userStake * netLoot) /
-            outcomeStakes[winningOutcome];
+        uint256 userPayout = userStake + (userStake * netLoot) / outcomeStakes[winningOutcome];
 
         hasClaimed[msg.sender] = true;
 
@@ -256,9 +223,7 @@ contract Event is ReentrancyGuard {
         emit PayoutClaimed(msg.sender, userPayout);
     }
 
-    function withdrawBet(
-        uint256 _outcomeIndex
-    ) external inStatus(EventStatus.Cancelled) {
+    function withdrawBet(uint256 _outcomeIndex) external inStatus(EventStatus.Cancelled) {
         uint256 userStake = userBets[msg.sender][_outcomeIndex];
         require(userStake > 0, "No bet to withdraw");
 
@@ -284,15 +249,8 @@ contract Event is ReentrancyGuard {
     /**
      * @notice Cancels the event. Cannot be called after the event start time.
      */
-    function cancelEvent()
-        external
-        onlyCollateralManager
-        inStatus(EventStatus.Open)
-    {
-        require(
-            block.timestamp < startTime,
-            "Cannot cancel after event start time"
-        );
+    function cancelEvent() external onlyCollateralManager inStatus(EventStatus.Open) {
+        require(block.timestamp < startTime, "Cannot cancel after event start time");
         require(status == EventStatus.Open, "Only opened event can be cancelled");
         status = EventStatus.Cancelled;
 
@@ -303,13 +261,8 @@ contract Event is ReentrancyGuard {
      * @notice Resolves the dispute. Can be called by governance or an arbitrator.
      * @param _finalOutcome The final outcome after dispute resolution.
      */
-    function resolveDispute(
-        uint256 _finalOutcome
-    ) external onlyCollateralManager nonReentrant {
-        require(
-            disputeStatus == DisputeStatus.Disputed,
-            "No dispute to resolve"
-        );
+    function resolveDispute(uint256 _finalOutcome) external onlyCollateralManager nonReentrant {
+        require(disputeStatus == DisputeStatus.Disputed, "No dispute to resolve");
         require(_finalOutcome < outcomes.length, "Invalid outcome index");
 
         disputeStatus = DisputeStatus.Resolved;
@@ -320,10 +273,7 @@ contract Event is ReentrancyGuard {
             // 50% User's collateral is transferred to the event creator
             bettingToken.transfer(creator, disputeCollateral / 2);
             // 50% User's collateral is transferred to the governance
-            bettingToken.transfer(
-                CollateralManager(collateralManager).protocolFeeRecipient(),
-                disputeCollateral / 2
-            );
+            bettingToken.transfer(CollateralManager(collateralManager).protocolFeeRecipient(), disputeCollateral / 2);
         }
 
         emit DisputeResolved(winningOutcome, _finalOutcome);
@@ -336,10 +286,7 @@ contract Event is ReentrancyGuard {
      * @param _user The user's address.
      * @param _outcomeIndex The index of the outcome.
      */
-    function getUserBet(
-        address _user,
-        uint256 _outcomeIndex
-    ) external view returns (uint256) {
+    function getUserBet(address _user, uint256 _outcomeIndex) external view returns (uint256) {
         return userBets[_user][_outcomeIndex];
     }
 
@@ -347,9 +294,7 @@ contract Event is ReentrancyGuard {
      * @notice Returns the total stake for a given outcome.
      * @param _outcomeIndex The index of the outcome.
      */
-    function getOutcomeStakes(
-        uint256 _outcomeIndex
-    ) external view returns (uint256) {
+    function getOutcomeStakes(uint256 _outcomeIndex) external view returns (uint256) {
         return outcomeStakes[_outcomeIndex];
     }
 

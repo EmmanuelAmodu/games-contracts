@@ -10,11 +10,7 @@ import {ERC20, IERC20Errors} from "@openzeppelin/contracts/token/ERC20/ERC20.sol
 contract MockERC20 is ERC20 {
     uint8 private _decimals;
 
-    constructor(
-        string memory name,
-        string memory symbol,
-        uint8 __decimals
-    ) ERC20(name, symbol) {
+    constructor(string memory name, string memory symbol, uint8 __decimals) ERC20(name, symbol) {
         _decimals = __decimals;
     }
 
@@ -61,10 +57,7 @@ contract MockEvent is Event {
     }
 
     function setStatusDisputed() external {
-        require(
-            status == EventStatus.Resolved,
-            "Event: Event must be resolved first"
-        );
+        require(status == EventStatus.Resolved, "Event: Event must be resolved first");
         disputeStatus = DisputeStatus.Disputed;
     }
 }
@@ -104,11 +97,7 @@ contract CollateralManagerTest is Test {
         vm.stopPrank();
 
         // Deploy CollateralManager contract
-        collateralManager = new CollateralManager(
-            address(collateralToken),
-            address(governance),
-            protocolFeeRecipient
-        );
+        collateralManager = new CollateralManager(address(collateralToken), address(governance), protocolFeeRecipient);
 
         // For testing purposes, we'll deploy an Event contract
         // Event constructor parameters:
@@ -144,23 +133,15 @@ contract CollateralManagerTest is Test {
         collateralToken.approve(address(collateralManager), 100 ether);
 
         // Call lockCollateral
-        collateralManager.lockCollateral(
-            address(eventContract),
-            user1,
-            100 ether
-        );
+        collateralManager.lockCollateral(address(eventContract), user1, 100 ether);
 
         vm.stopPrank();
 
         // Check that collateral is locked
-        uint256 lockedAmount = collateralManager.collateralBalances(
-            address(eventContract)
-        );
+        uint256 lockedAmount = collateralManager.collateralBalances(address(eventContract));
         assertEq(lockedAmount, 100 ether);
 
-        bool isLocked = collateralManager.isCollateralLocked(
-            address(eventContract)
-        );
+        bool isLocked = collateralManager.isCollateralLocked(address(eventContract));
         assertTrue(isLocked);
     }
 
@@ -171,18 +152,9 @@ contract CollateralManagerTest is Test {
         // Expect revert due to insufficient allowance
         // vm.expectRevert("ERC20: insufficient allowance");
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IERC20Errors.ERC20InsufficientAllowance.selector,
-                collateralManager,
-                0,
-                100 ether
-            )
+            abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, collateralManager, 0, 100 ether)
         );
-        collateralManager.lockCollateral(
-            address(eventContract),
-            user1,
-            100 ether
-        );
+        collateralManager.lockCollateral(address(eventContract), user1, 100 ether);
 
         vm.stopPrank();
     }
@@ -199,17 +171,12 @@ contract CollateralManagerTest is Test {
         collateralToken.approve(address(collateralManager), additionalAmount);
 
         // Call increaseCollateral
-        collateralManager.increaseCollateral(
-            address(eventContract),
-            additionalAmount
-        );
+        collateralManager.increaseCollateral(address(eventContract), additionalAmount);
 
         vm.stopPrank();
 
         // Check that collateral is increased
-        uint256 lockedAmount = collateralManager.collateralBalances(
-            address(eventContract)
-        );
+        uint256 lockedAmount = collateralManager.collateralBalances(address(eventContract));
         assertEq(lockedAmount, 150 ether);
     }
 
@@ -238,14 +205,10 @@ contract CollateralManagerTest is Test {
         assertEq(finalBalance - initialBalance, 100 ether);
 
         // Check that collateral balance is zero
-        uint256 lockedAmount = collateralManager.collateralBalances(
-            address(eventContract)
-        );
+        uint256 lockedAmount = collateralManager.collateralBalances(address(eventContract));
         assertEq(lockedAmount, 0);
 
-        bool isLocked = collateralManager.isCollateralLocked(
-            address(eventContract)
-        );
+        bool isLocked = collateralManager.isCollateralLocked(address(eventContract));
         assertFalse(isLocked);
     }
 
@@ -282,14 +245,10 @@ contract CollateralManagerTest is Test {
         assertEq(userBalance, 10_000 ether); // Since collateral has been returned
 
         // Check that collateral balance is zero
-        uint256 lockedAmount = collateralManager.collateralBalances(
-            address(eventContract)
-        );
+        uint256 lockedAmount = collateralManager.collateralBalances(address(eventContract));
         assertEq(lockedAmount, 0);
 
-        bool isLocked = collateralManager.isCollateralLocked(
-            address(eventContract)
-        );
+        bool isLocked = collateralManager.isCollateralLocked(address(eventContract));
         assertFalse(isLocked);
     }
 
@@ -325,14 +284,10 @@ contract CollateralManagerTest is Test {
         assertEq(disputeStatusAfter, uint256(Event.DisputeStatus.Resolved));
 
         // Check that collateral has been released
-        uint256 collateralBalance = collateralManager.collateralBalances(
-            address(eventContract)
-        );
+        uint256 collateralBalance = collateralManager.collateralBalances(address(eventContract));
         assertEq(collateralBalance, 0);
 
-        bool isLocked = collateralManager.isCollateralLocked(
-            address(eventContract)
-        );
+        bool isLocked = collateralManager.isCollateralLocked(address(eventContract));
         assertFalse(isLocked);
     }
 

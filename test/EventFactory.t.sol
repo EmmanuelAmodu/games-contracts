@@ -11,11 +11,7 @@ import {ERC20, IERC20Errors} from "@openzeppelin/contracts/token/ERC20/ERC20.sol
 contract MockERC20 is ERC20 {
     uint8 private _decimals;
 
-    constructor(
-        string memory name,
-        string memory symbol,
-        uint8 __decimals
-    ) ERC20(name, symbol) {
+    constructor(string memory name, string memory symbol, uint8 __decimals) ERC20(name, symbol) {
         _decimals = __decimals;
     }
 
@@ -57,17 +53,10 @@ contract EventFactoryTest is Test {
         governance = new Governance(owner);
 
         // Deploy CollateralManager contract
-        collateralManager = new CollateralManager(
-            address(bettingToken),
-            address(governance),
-            user3
-        );
+        collateralManager = new CollateralManager(address(bettingToken), address(governance), user3);
 
         // Deploy EventFactory contract
-        eventFactory = new EventFactory(
-            address(collateralManager),
-            address(governance)
-        );
+        eventFactory = new EventFactory(address(collateralManager), address(governance));
 
         // Set bettingToken in EventFactory (Assuming you have a setter function)
         eventFactory.setBettingToken(address(bettingToken));
@@ -94,15 +83,8 @@ contract EventFactoryTest is Test {
         bettingToken.approve(address(collateralManager), collateralAmount);
 
         // Create the event
-        (address eventAddress, uint256 eventId) = eventFactory.createEvent(
-            title,
-            description,
-            category,
-            outcomes,
-            startTime,
-            endTime,
-            collateralAmount
-        );
+        (address eventAddress, uint256 eventId) =
+            eventFactory.createEvent(title, description, category, outcomes, startTime, endTime, collateralAmount);
 
         vm.stopPrank();
 
@@ -111,9 +93,7 @@ contract EventFactoryTest is Test {
         assertEq(storedEventAddress, eventAddress);
 
         // Verify the collateral is locked in CollateralManager
-        uint256 collateralBalance = collateralManager.collateralBalances(
-            eventAddress
-        );
+        uint256 collateralBalance = collateralManager.collateralBalances(eventAddress);
         assertEq(collateralBalance, collateralAmount);
 
         // Verify the event has the correct creator
@@ -140,21 +120,10 @@ contract EventFactoryTest is Test {
         // vm.expectRevert("IERC20: insufficient allowance");
         vm.expectRevert(
             abi.encodeWithSelector(
-                IERC20Errors.ERC20InsufficientAllowance.selector,
-                collateralManager,
-                0,
-                collateralAmount
+                IERC20Errors.ERC20InsufficientAllowance.selector, collateralManager, 0, collateralAmount
             )
         );
-        eventFactory.createEvent(
-            title,
-            description,
-            category,
-            outcomes,
-            startTime,
-            endTime,
-            collateralAmount
-        );
+        eventFactory.createEvent(title, description, category, outcomes, startTime, endTime, collateralAmount);
 
         vm.stopPrank();
     }
@@ -165,9 +134,7 @@ contract EventFactoryTest is Test {
         // Create multiple events
         for (uint256 i = 0; i < 3; i++) {
             // Parameters for the event
-            string memory title = string(
-                abi.encodePacked("Test Event ", vm.toString(i))
-            );
+            string memory title = string(abi.encodePacked("Test Event ", vm.toString(i)));
             string memory description = "This is a test event";
             string memory category = "Sports";
             outcomes[0] = "Team A";
@@ -180,15 +147,7 @@ contract EventFactoryTest is Test {
             bettingToken.approve(address(collateralManager), collateralAmount);
 
             // Create the event
-            eventFactory.createEvent(
-                title,
-                description,
-                category,
-                outcomes,
-                startTime,
-                endTime,
-                collateralAmount
-            );
+            eventFactory.createEvent(title, description, category, outcomes, startTime, endTime, collateralAmount);
         }
 
         vm.stopPrank();
@@ -217,15 +176,8 @@ contract EventFactoryTest is Test {
         bettingToken.approve(address(collateralManager), collateralAmount);
 
         // Create the event
-        (address eventAddress, uint256 eventId) = eventFactory.createEvent(
-            title,
-            description,
-            category,
-            outcomes,
-            startTime,
-            endTime,
-            collateralAmount
-        );
+        (address eventAddress, uint256 eventId) =
+            eventFactory.createEvent(title, description, category, outcomes, startTime, endTime, collateralAmount);
 
         vm.stopPrank();
 

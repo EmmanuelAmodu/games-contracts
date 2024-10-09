@@ -11,17 +11,10 @@ contract EventFactory {
     address public bettingToken;
     Governance public governance;
 
-    event EventCreated(
-        address indexed eventAddress,
-        address indexed creator,
-        uint256 eventId
-    );
+    event EventCreated(address indexed eventAddress, address indexed creator, uint256 eventId);
 
     modifier onlyOwner() {
-        require(
-            msg.sender == governance.owner(),
-            "CollateralManager: Only owner can call"
-        );
+        require(msg.sender == governance.owner(), "CollateralManager: Only owner can call");
         _;
     }
 
@@ -58,11 +51,7 @@ contract EventFactory {
         eventAddress = address(newEvent);
 
         // Transfer collateral from the creator to the CollateralManager for this event
-        CollateralManager(collateralManager).lockCollateral(
-            eventAddress,
-            msg.sender,
-            _collateralAmount
-        );
+        CollateralManager(collateralManager).lockCollateral(eventAddress, msg.sender, _collateralAmount);
 
         allEvents.push(eventAddress);
 
@@ -92,9 +81,7 @@ contract EventFactory {
         return openEvents;
     }
 
-    function getEvent(
-        uint256 eventId
-    ) external view returns (address eventAddress) {
+    function getEvent(uint256 eventId) external view returns (address eventAddress) {
         require(eventId < allEvents.length, "Invalid event ID");
         return allEvents[eventId];
     }

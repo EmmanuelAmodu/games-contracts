@@ -153,10 +153,7 @@ contract MockAdminContract {
     }
 
     modifier onlyAdmin() {
-        require(
-            governance.approvedAdmins(msg.sender),
-            "Governance: Only approved admin can call"
-        );
+        require(governance.approvedAdmins(msg.sender), "Governance: Only approved admin can call");
         _;
     }
 

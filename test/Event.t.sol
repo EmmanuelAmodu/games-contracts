@@ -10,11 +10,7 @@ import {ERC20, IERC20Errors} from "@openzeppelin/contracts/token/ERC20/ERC20.sol
 contract MockERC20 is ERC20 {
     uint8 private _decimals;
 
-    constructor(
-        string memory name,
-        string memory symbol,
-        uint8 __decimals
-    ) ERC20(name, symbol) {
+    constructor(string memory name, string memory symbol, uint8 __decimals) ERC20(name, symbol) {
         _decimals = __decimals;
     }
 
@@ -65,11 +61,7 @@ contract EventTest is Test {
         vm.stopPrank();
 
         // Deploy CollateralManager contract
-        collateralManager = new CollateralManager(
-            address(bettingToken),
-            address(governance),
-            protocolFeeRecipient
-        );
+        collateralManager = new CollateralManager(address(bettingToken), address(governance), protocolFeeRecipient);
 
         // For testing purposes, we'll deploy an Event contract
         // Event constructor parameters:
