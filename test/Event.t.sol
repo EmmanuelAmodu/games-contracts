@@ -80,8 +80,8 @@ contract EventTest is Test {
         outcomes[0] = "Team A";
         outcomes[1] = "Team B";
         uint256 startTime = block.timestamp + 1 hours; // Starts in 1 hour
-        uint256 endTime = block.timestamp + 3 hours;   // Ends in 3 hours
-        uint256 collateralAmount = 100 ether;          // 100 BET
+        uint256 endTime = block.timestamp + 3 hours; // Ends in 3 hours
+        uint256 collateralAmount = 100 ether; // 100 BET
 
         eventContract = new Event(
             title,

@@ -47,7 +47,7 @@ contract EventFactoryTest is Test {
         user2 = vm.addr(2);
 
         // Deploy MockERC20 token
-        bettingToken = new MockERC20('Betting Token', 'BET', 18);
+        bettingToken = new MockERC20("Betting Token", "BET", 18);
 
         // Distribute tokens to users
         bettingToken.mint(user1, 10_000 ether);
@@ -57,10 +57,17 @@ contract EventFactoryTest is Test {
         governance = new Governance(owner);
 
         // Deploy CollateralManager contract
-        collateralManager = new CollateralManager(address(bettingToken), address(governance), user3);
+        collateralManager = new CollateralManager(
+            address(bettingToken),
+            address(governance),
+            user3
+        );
 
         // Deploy EventFactory contract
-        eventFactory = new EventFactory(address(collateralManager), address(governance));
+        eventFactory = new EventFactory(
+            address(collateralManager),
+            address(governance)
+        );
 
         // Set bettingToken in EventFactory (Assuming you have a setter function)
         eventFactory.setBettingToken(address(bettingToken));
@@ -104,7 +111,9 @@ contract EventFactoryTest is Test {
         assertEq(storedEventAddress, eventAddress);
 
         // Verify the collateral is locked in CollateralManager
-        uint256 collateralBalance = collateralManager.collateralBalances(eventAddress);
+        uint256 collateralBalance = collateralManager.collateralBalances(
+            eventAddress
+        );
         assertEq(collateralBalance, collateralAmount);
 
         // Verify the event has the correct creator
@@ -129,7 +138,14 @@ contract EventFactoryTest is Test {
 
         // Expect revert due to transfer amount exceeding allowance
         // vm.expectRevert("IERC20: insufficient allowance");
-        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, collateralManager, 0, collateralAmount));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector,
+                collateralManager,
+                0,
+                collateralAmount
+            )
+        );
         eventFactory.createEvent(
             title,
             description,
@@ -149,7 +165,9 @@ contract EventFactoryTest is Test {
         // Create multiple events
         for (uint256 i = 0; i < 3; i++) {
             // Parameters for the event
-            string memory title = string(abi.encodePacked("Test Event ", vm.toString(i)));
+            string memory title = string(
+                abi.encodePacked("Test Event ", vm.toString(i))
+            );
             string memory description = "This is a test event";
             string memory category = "Sports";
             outcomes[0] = "Team A";
