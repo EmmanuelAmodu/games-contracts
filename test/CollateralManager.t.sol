@@ -41,6 +41,7 @@ contract MockEvent is Event {
         address _bettingToken
     )
         Event(
+            0,
             _title,
             _description,
             _category,

@@ -19,6 +19,7 @@ contract Event is ReentrancyGuard {
         Resolved
     }
 
+    uint256 public eventId;
     string public title;
     string public description;
     string public category;
@@ -56,7 +57,7 @@ contract Event is ReentrancyGuard {
     event EventCancelled();
     event DisputeCreated(address indexed user, string reason);
     event DisputeResolved(uint256 initialOutcome, uint256 finalOutcome);
-    event EventClosed();
+    event EventClosed(uint256 eventId);
 
     modifier onlyCreator() {
         require(msg.sender == creator, "Only event creator");
@@ -77,6 +78,7 @@ contract Event is ReentrancyGuard {
     }
 
     constructor(
+        uint256 _eventId,
         string memory _title,
         string memory _description,
         string memory _category,
@@ -92,6 +94,7 @@ contract Event is ReentrancyGuard {
         require(_endTime > _startTime, "End time must be after start time");
         require(_outcomes.length >= 2, "At least two outcomes required");
 
+        eventId = _eventId;
         title = _title;
         description = _description;
         category = _category;
@@ -137,7 +140,6 @@ contract Event is ReentrancyGuard {
         emit BetPlaced(msg.sender, _amount, _outcomeIndex);
     }
 
-
     /**
      * @notice Sets the protocol fee percentage. Can only be called by the governance.
      * @param _collateralAmount The new protocol fee percentage.
@@ -161,7 +163,7 @@ contract Event is ReentrancyGuard {
         require(status == EventStatus.Resolved, "Event not resolved");
 
         status = EventStatus.Closed;
-        emit EventClosed();
+        emit EventClosed(eventId);
     }
 
     /**

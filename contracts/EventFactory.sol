@@ -40,7 +40,9 @@ contract EventFactory {
         uint256 _collateralAmount
     ) external returns (address eventAddress, uint256 eventId) {
         // Deploy a new Event contract
+        eventId = allEvents.length;
         Event newEvent = new Event(
+            eventId,
             _title,
             _description,
             _category,
@@ -62,7 +64,6 @@ contract EventFactory {
             _collateralAmount
         );
 
-        eventId = allEvents.length;
         allEvents.push(eventAddress);
 
         emit EventCreated(eventAddress, msg.sender, eventId);

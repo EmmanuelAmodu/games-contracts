@@ -84,6 +84,7 @@ contract EventTest is Test {
         uint256 collateralAmount = 100 ether; // 100 BET
 
         eventContract = new Event(
+            0,
             title,
             description,
             category,
