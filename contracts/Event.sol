@@ -76,11 +76,6 @@ contract Event is ReentrancyGuard {
         _;
     }
 
-    modifier notContract() {
-        require(msg.sender == tx.origin, "Contracts not allowed");
-        _;
-    }
-
     constructor(
         string memory _title,
         string memory _description,
@@ -123,7 +118,7 @@ contract Event is ReentrancyGuard {
     function placeBet(
         uint256 _outcomeIndex,
         uint256 _amount
-    ) external inStatus(EventStatus.Open) notContract {
+    ) external inStatus(EventStatus.Open) {
         require(
             block.timestamp >= startTime && block.timestamp <= endTime,
             "Betting is closed"
@@ -230,7 +225,6 @@ contract Event is ReentrancyGuard {
     function claimPayout()
         external
         inStatus(EventStatus.Resolved)
-        notContract
         nonReentrant
     {
         require(block.timestamp > disputeDeadline, "Dispute period not over");
