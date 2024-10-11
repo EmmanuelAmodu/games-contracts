@@ -405,7 +405,7 @@ Each event contract handles:
 ### 9.1 Blockchain Platform
 
 - **Platform Choice**:
-  - Built on Ethereum or compatible EVM blockchain.
+  - Built on Base or compatible EVM blockchain.
 
 - **Scalability Solutions**:
   - Utilize Layer 2 solutions like Optimistic Rollups or zk-Rollups to reduce gas costs.
@@ -427,7 +427,7 @@ Each event contract handles:
 ### 9.3 Wallet Integration
 
 - **Wallet Support**:
-  - Integration with MetaMask, WalletConnect, and other popular wallets.
+  - Integration with Coinbase Wallet, MetaMask, WalletConnect, and other popular wallets.
 
 - **Secure Transactions**:
   - Users sign transactions securely through their wallets.
