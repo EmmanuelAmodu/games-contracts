@@ -96,9 +96,6 @@ contract EventTest is Test {
         // Approve the Event contract to spend user1's tokens
         bettingToken.approve(address(eventContract), 50 ether);
 
-        // Fast forward time to after startTime
-        vm.warp(eventContract.startTime() + 1);
-
         // Place a bet on outcome 0
         eventContract.placeBet(0, 50 ether);
 
@@ -113,11 +110,14 @@ contract EventTest is Test {
         assertEq(totalStaked, 50 ether);
     }
 
-    function testPlaceBetBeforeStartTimeShouldFail() public {
+    function testPlaceBetAfterStartTimeShouldFail() public {
         vm.startPrank(user1);
 
         // Approve the Event contract to spend user1's tokens
         bettingToken.approve(address(eventContract), 50 ether);
+
+        // Fast forward time to after startTime
+        vm.warp(eventContract.startTime());
 
         // Try to place a bet before the event has started
         vm.expectRevert("Betting is closed");
@@ -396,6 +396,24 @@ contract EventTest is Test {
 
         vm.expectRevert("Invalid event status");
         eventContract.withdrawBet(0);
+
+        vm.stopPrank();
+    }
+
+    function testUserCannotBetMoreThanTenPercent() public {
+        vm.warp(eventContract.startTime() - 10);
+        uint256 bettingLimit = eventContract.bettingLimit();
+        uint256 userMaxBet = bettingLimit / 10;
+
+        vm.startPrank(user1);
+        bettingToken.approve(address(eventContract), userMaxBet + 1 ether);
+
+        // User tries to bet exactly 10% of the betting limit
+        eventContract.placeBet(0, userMaxBet);
+
+        // User tries to bet an additional amount, exceeding 10%
+        vm.expectRevert("Bet amount exceeds user limit");
+        eventContract.placeBet(0, 1 ether);
 
         vm.stopPrank();
     }

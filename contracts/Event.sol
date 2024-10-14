@@ -2,10 +2,14 @@
 pragma solidity ^0.8.17;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./CollateralManager.sol";
 
 contract Event is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    string public constant VERSION = "0.0.4";
     enum EventStatus {
         Open,
         Closed,
@@ -23,6 +27,8 @@ contract Event is ReentrancyGuard {
     string public title;
     string public description;
     string public category;
+    string public thumbnailUrl;
+    string public streamingUrl;
     string[] public outcomes;
     uint256 public startTime;
     uint256 public endTime;
@@ -36,6 +42,9 @@ contract Event is ReentrancyGuard {
     mapping(uint256 => uint256) public outcomeStakes;
     mapping(address => mapping(uint256 => uint256)) public userBets;
     mapping(address => bool) public hasClaimed;
+    mapping(address => uint256) public userTotalBets;
+    mapping(uint256 => uint256) public outcomeStakers;
+    uint256 public totalStakers;
 
     uint256 public winningOutcome;
     uint256 public protocolFeePercentage = 10; // 10%
@@ -115,17 +124,24 @@ contract Event is ReentrancyGuard {
      * @param _amount Amount to bet
      */
     function placeBet(uint256 _outcomeIndex, uint256 _amount) external inStatus(EventStatus.Open) {
-        require(block.timestamp >= startTime && block.timestamp <= endTime, "Betting is closed");
+        require(block.timestamp < startTime, "Betting is closed");
         require(totalStaked + _amount <= bettingLimit, "Betting limit reached");
         require(_outcomeIndex < outcomes.length, "Invalid outcome index");
         require(_amount > 0, "Bet amount must be greater than zero");
 
-        // Transfer betting tokens from the user to the contract
-        bettingToken.transferFrom(msg.sender, address(this), _amount);
+        require(
+            userTotalBets[msg.sender] + _amount <= bettingLimit / 10,
+            "Bet amount exceeds user limit"
+        );
+
+        bettingToken.safeTransferFrom(msg.sender, address(this), _amount);
 
         userBets[msg.sender][_outcomeIndex] += _amount;
+        userTotalBets[msg.sender] += _amount; // Update user's total bets
         outcomeStakes[_outcomeIndex] += _amount;
+        outcomeStakers[_outcomeIndex] += 1;
         totalStaked += _amount;
+        totalStakers += 1;
 
         emit BetPlaced(msg.sender, _amount, _outcomeIndex);
     }
@@ -141,12 +157,31 @@ contract Event is ReentrancyGuard {
     /**
      * @notice Closes the event for betting. Can only be called by the Collateral Manager.
      */
-    function closeEvent() external inStatus(EventStatus.Resolved) onlyCollateralManager {
+    function closeEvent() external onlyCollateralManager {
+        require(
+            status == EventStatus.Resolved || status == EventStatus.Cancelled,
+            "Event not resolved or cancelled"
+        );
         require(block.timestamp > endTime, "Event has not ended yet");
-        require(status == EventStatus.Resolved, "Event not resolved");
 
         status = EventStatus.Closed;
         emit EventClosed(eventId);
+    }
+
+    /**
+     * @notice Updates the thumbnail URL of the event. Can only be called by the creator.
+     * @param _thumbnailUrl The new thumbnail URL.
+     */
+    function updateThumbnailUrl(string memory _thumbnailUrl) external onlyCreator {
+        thumbnailUrl = _thumbnailUrl;
+    }
+
+    /**
+     * @notice Updates the streaming URL of the event. Can only be called by the creator.
+     * @param _streamingUrl The new streaming URL.
+     */
+    function updateStreamingUrl(string memory _streamingUrl) external onlyCreator {
+        streamingUrl = _streamingUrl;
     }
 
     /**
@@ -189,7 +224,7 @@ contract Event is ReentrancyGuard {
         disputeCollateral = (totalStaked * 10) / 100; // 10% of total staked
         require(bettingToken.balanceOf(msg.sender) >= disputeCollateral, "Insufficient balance to create dispute");
 
-        bettingToken.transferFrom(msg.sender, address(this), disputeCollateral);
+        bettingToken.safeTransferFrom(msg.sender, address(this), disputeCollateral);
         disputeStatus = DisputeStatus.Disputed;
         disputingUser = msg.sender;
         disputeReason = _reason;
@@ -200,7 +235,7 @@ contract Event is ReentrancyGuard {
     /**
      * @notice Allows users who bet on the winning outcome to claim their payouts.
      */
-    function claimPayout() external inStatus(EventStatus.Resolved) nonReentrant {
+    function claimPayout() external inStatus(EventStatus.Closed) nonReentrant {
         require(block.timestamp > disputeDeadline, "Dispute period not over");
         require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
         require(!hasClaimed[msg.sender], "Payout already claimed");
@@ -215,35 +250,44 @@ contract Event is ReentrancyGuard {
 
         uint256 userPayout = userStake + (userStake * netLoot) / outcomeStakes[winningOutcome];
 
-        hasClaimed[msg.sender] = true;
-
         // Transfer payout to user
-        bettingToken.transfer(msg.sender, userPayout);
+        bettingToken.safeTransfer(msg.sender, userPayout);
+
+        hasClaimed[msg.sender] = true;
 
         emit PayoutClaimed(msg.sender, userPayout);
     }
 
+    /**
+     * @notice Allows users to withdraw their bets if the event is cancelled.
+     * @param _outcomeIndex The index of the outcome to withdraw the bet from.
+     */
     function withdrawBet(uint256 _outcomeIndex) external inStatus(EventStatus.Cancelled) {
+        require(_outcomeIndex < outcomes.length, "Invalid outcome index");
         uint256 userStake = userBets[msg.sender][_outcomeIndex];
         require(userStake > 0, "No bet to withdraw");
 
         // Update mappings
         userBets[msg.sender][_outcomeIndex] = 0;
+        userTotalBets[msg.sender] -= userStake; // Decrease user's total bets
         outcomeStakes[_outcomeIndex] -= userStake;
         totalStaked -= userStake;
 
         // Transfer tokens back to user
-        bettingToken.transfer(msg.sender, userStake);
+        bettingToken.safeTransfer(msg.sender, userStake);
     }
 
     /**
-     * @notice Calculates the fee for a given amount based on the current loot.
-     * @return The fee amount.
+     * @notice Pays the fees to the protocol and the event creator.
+     * @param protocolFeeRecipient The address to receive the protocol fees.
      */
-    function calculateFee() public view returns (uint256) {
+    function payFees(address protocolFeeRecipient) external onlyCollateralManager inStatus(EventStatus.Resolved) {
         uint256 winningStake = outcomeStakes[winningOutcome];
         uint256 loot = totalStaked - winningStake;
-        return (loot * protocolFeePercentage) / 100;
+        uint256 fee = (loot * protocolFeePercentage) / 100;
+
+       bettingToken.safeTransfer(protocolFeeRecipient, fee / 2);
+       bettingToken.safeTransfer(creator, fee / 2);
     }
 
     /**
@@ -271,9 +315,9 @@ contract Event is ReentrancyGuard {
             winningOutcome = _finalOutcome;
         } else {
             // 50% User's collateral is transferred to the event creator
-            bettingToken.transfer(creator, disputeCollateral / 2);
+            bettingToken.safeTransfer(creator, disputeCollateral / 2);
             // 50% User's collateral is transferred to the governance
-            bettingToken.transfer(CollateralManager(collateralManager).protocolFeeRecipient(), disputeCollateral / 2);
+            bettingToken.safeTransfer(CollateralManager(collateralManager).protocolFeeRecipient(), disputeCollateral / 2);
         }
 
         emit DisputeResolved(winningOutcome, _finalOutcome);
@@ -316,5 +360,13 @@ contract Event is ReentrancyGuard {
      */
     function getOutcomes() external view returns (string[] memory) {
         return outcomes;
+    }
+
+    function getOutcomeStakers() external view returns (uint256[] memory) {
+        uint256[] memory stakers = new uint256[](outcomes.length);
+        for (uint256 i = 0; i < outcomes.length; i++) {
+            stakers[i] = outcomeStakers[i];
+        }
+        return stakers;
     }
 }

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.17;
 
 contract Governance {
+    string public constant VERSION = "0.0.4";
     address public owner;
     mapping(address => bool) public approvedAdmins;
 
@@ -22,6 +23,7 @@ contract Governance {
     constructor(address _owner) {
         require(_owner != address(0), "Governance: Owner address cannot be zero");
         owner = _owner;
+        approvedAdmins[_owner] = true;
     }
 
     /**

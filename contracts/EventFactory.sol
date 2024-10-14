@@ -6,6 +6,7 @@ import "./CollateralManager.sol";
 import "./Governance.sol";
 
 contract EventFactory {
+    string public constant VERSION = "0.0.4";
     address public collateralManager;
     address[] public allEvents;
     address public bettingToken;
