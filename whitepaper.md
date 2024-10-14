@@ -58,7 +58,7 @@ The Pepper Gambling Protocol is a decentralized, non-custodial platform facilita
 - **Multi-Outcome Support**: Supports events with multiple possible outcomes.
 - **Dynamic Odds Calculation**: Odds are calculated based on the total amount wagered on each outcome, adjusting in real-time.
 - **Fair Payout Distribution**: The total amount staked on losing outcomes is redistributed among winners proportionally.
-- **Protocol Fees**: A 1% fee is charged on the total loot (losing bets), split equally between the event creator and the protocol.
+- **Protocol Fees**: A 10% fee is charged on the total loot (losing bets), split equally between the event creator and the protocol.
 - **Security and Transparency**: Smart contracts govern all operations, and mechanisms are in place to handle disputes and ensure fair outcomes.
 
 ---
