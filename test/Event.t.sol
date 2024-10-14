@@ -3,7 +3,7 @@ pragma solidity ^0.8.17;
 
 import "forge-std/Test.sol";
 import "../contracts/Event.sol";
-import "../contracts/CollateralManager.sol";
+import "../contracts/EventManager.sol";
 import "../contracts/Governance.sol";
 import {ERC20, IERC20Errors} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -25,9 +25,9 @@ contract MockERC20 is ERC20 {
 
 contract EventTest is Test {
     Event public eventContract;
-    CollateralManager public collateralManager;
+    EventManager public eventManager;
     Governance public governance;
-    MockERC20 public bettingToken;
+    MockERC20 public protocolToken;
 
     address public owner;
     address public admin1;
@@ -47,12 +47,12 @@ contract EventTest is Test {
         outcomes = new string[](2);
 
         // Deploy MockERC20 token
-        bettingToken = new MockERC20("BettingToken", "BET", 18);
+        protocolToken = new MockERC20("protocolToken", "BET", 18);
 
         // Distribute tokens to users
-        bettingToken.mint(creator, 10_000 ether);
-        bettingToken.mint(user1, 10_000 ether);
-        bettingToken.mint(user2, 10_000 ether);
+        protocolToken.mint(creator, 10_000 ether);
+        protocolToken.mint(user1, 10_000 ether);
+        protocolToken.mint(user2, 10_000 ether);
 
         // Deploy Governance contract and add an admin
         vm.startPrank(owner);
@@ -60,12 +60,12 @@ contract EventTest is Test {
         governance.addAdmin(admin1);
         vm.stopPrank();
 
-        // Deploy CollateralManager contract
-        collateralManager = new CollateralManager(address(bettingToken), address(governance), protocolFeeRecipient);
+        // Deploy EventManager contract
+        eventManager = new EventManager(address(protocolToken), address(governance), protocolFeeRecipient);
 
         // For testing purposes, we'll deploy an Event contract
         // Event constructor parameters:
-        // (title, description, category, outcomes, startTime, endTime, creator, collateralAmount, collateralManager, bettingToken)
+        // (title, description, category, outcomes, startTime, endTime, creator, collateralAmount, collateralManager, protocolToken)
         string memory title = "Test Event";
         string memory description = "This is a test event";
         string memory category = "Sports";
@@ -85,8 +85,8 @@ contract EventTest is Test {
             endTime,
             creator,
             collateralAmount,
-            address(collateralManager),
-            address(bettingToken)
+            address(eventManager),
+            address(protocolToken)
         );
     }
 
@@ -94,7 +94,7 @@ contract EventTest is Test {
         vm.startPrank(user1);
 
         // Approve the Event contract to spend user1's tokens
-        bettingToken.approve(address(eventContract), 50 ether);
+        protocolToken.approve(address(eventContract), 50 ether);
 
         // Place a bet on outcome 0
         eventContract.placeBet(0, 50 ether);
@@ -114,7 +114,7 @@ contract EventTest is Test {
         vm.startPrank(user1);
 
         // Approve the Event contract to spend user1's tokens
-        bettingToken.approve(address(eventContract), 50 ether);
+        protocolToken.approve(address(eventContract), 50 ether);
 
         // Fast forward time to after startTime
         vm.warp(eventContract.startTime());
@@ -130,7 +130,7 @@ contract EventTest is Test {
         vm.startPrank(user1);
 
         // Approve the Event contract to spend user1's tokens
-        bettingToken.approve(address(eventContract), 50 ether);
+        protocolToken.approve(address(eventContract), 50 ether);
 
         // Fast forward time to after endTime
         vm.warp(eventContract.endTime() + 1);
@@ -206,9 +206,9 @@ contract EventTest is Test {
         vm.startPrank(user1);
 
         // Claim payout
-        uint256 initialBalance = bettingToken.balanceOf(user1);
+        uint256 initialBalance = protocolToken.balanceOf(user1);
         eventContract.claimPayout();
-        uint256 finalBalance = bettingToken.balanceOf(user1);
+        uint256 finalBalance = protocolToken.balanceOf(user1);
 
         vm.stopPrank();
 
@@ -258,7 +258,7 @@ contract EventTest is Test {
 
         // Approve the Event contract to spend dispute collateral
         uint256 disputeCollateral = (eventContract.totalStaked() * 10) / 100;
-        bettingToken.approve(address(eventContract), disputeCollateral);
+        protocolToken.approve(address(eventContract), disputeCollateral);
 
         eventContract.createDispute("Disagree with outcome");
 
@@ -313,14 +313,14 @@ contract EventTest is Test {
         vm.startPrank(user1);
 
         uint256 disputeCollateral = (eventContract.totalStaked() * 10) / 100;
-        bettingToken.approve(address(eventContract), disputeCollateral);
+        protocolToken.approve(address(eventContract), disputeCollateral);
 
         eventContract.createDispute("Disagree with outcome");
 
         vm.stopPrank();
 
         // Admin resolves the dispute in favor of outcome 0
-        vm.startPrank(address(collateralManager)); // CollateralManager calls resolveDispute
+        vm.startPrank(address(eventManager)); // EventManager calls resolveDispute
 
         eventContract.resolveDispute(0);
 
@@ -339,8 +339,8 @@ contract EventTest is Test {
         // Fast forward time to before startTime
         vm.warp(eventContract.startTime() - 30 minutes);
 
-        // CollateralManager cancels the event
-        vm.startPrank(address(collateralManager));
+        // EventManager cancels the event
+        vm.startPrank(address(eventManager));
 
         eventContract.cancelEvent();
 
@@ -355,8 +355,8 @@ contract EventTest is Test {
         // Fast forward time to after startTime
         vm.warp(eventContract.startTime() + 1);
 
-        // CollateralManager tries to cancel the event
-        vm.startPrank(address(collateralManager));
+        // EventManager tries to cancel the event
+        vm.startPrank(address(eventManager));
 
         vm.expectRevert("Cannot cancel after event start time");
         eventContract.cancelEvent();
@@ -370,16 +370,16 @@ contract EventTest is Test {
 
         // Cancel the event
         vm.warp(eventContract.startTime() - 30 minutes);
-        vm.startPrank(address(collateralManager));
+        vm.startPrank(address(eventManager));
         eventContract.cancelEvent();
         vm.stopPrank();
 
         // User1 withdraws their bet
         vm.startPrank(user1);
 
-        uint256 initialBalance = bettingToken.balanceOf(user1);
+        uint256 initialBalance = protocolToken.balanceOf(user1);
         eventContract.withdrawBet(0);
-        uint256 finalBalance = bettingToken.balanceOf(user1);
+        uint256 finalBalance = protocolToken.balanceOf(user1);
 
         vm.stopPrank();
 
@@ -406,7 +406,7 @@ contract EventTest is Test {
         uint256 userMaxBet = bettingLimit / 10;
 
         vm.startPrank(user1);
-        bettingToken.approve(address(eventContract), userMaxBet + 1 ether);
+        protocolToken.approve(address(eventContract), userMaxBet + 1 ether);
 
         // User tries to bet exactly 10% of the betting limit
         eventContract.placeBet(0, userMaxBet);

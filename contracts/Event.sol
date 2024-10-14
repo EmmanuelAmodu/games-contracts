@@ -4,12 +4,12 @@ pragma solidity ^0.8.17;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./CollateralManager.sol";
+import "./EventManager.sol";
 
 contract Event is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    string public constant VERSION = "0.0.4";
+    string public constant VERSION = "0.0.5";
     enum EventStatus {
         Open,
         Closed,
@@ -49,7 +49,7 @@ contract Event is ReentrancyGuard {
     uint256 public winningOutcome;
     uint256 public protocolFeePercentage = 10; // 10%
 
-    IERC20 public bettingToken;
+    IERC20 public protocolToken;
 
     // Dispute variables
     // V2: Multiple users can create dispute till disputeCollateral to event collateral is reached
@@ -94,7 +94,7 @@ contract Event is ReentrancyGuard {
         address _creator,
         uint256 _collateralAmount,
         address _collateralManager,
-        address _bettingToken
+        address _protocolToken
     ) {
         require(_startTime >= block.timestamp, "Start time must be in future");
         require(_endTime > _startTime, "End time must be after start time");
@@ -112,10 +112,10 @@ contract Event is ReentrancyGuard {
         collateralManager = _collateralManager;
         status = EventStatus.Open;
 
-        bettingToken = IERC20(_bettingToken);
+        protocolToken = IERC20(_protocolToken);
 
         // Calculate betting limit
-        bettingLimit = CollateralManager(collateralManager).computeBetLimit(creator, _collateralAmount);
+        bettingLimit = EventManager(collateralManager).computeBetLimit(creator, _collateralAmount);
     }
 
     /**
@@ -134,7 +134,7 @@ contract Event is ReentrancyGuard {
             "Bet amount exceeds user limit"
         );
 
-        bettingToken.safeTransferFrom(msg.sender, address(this), _amount);
+        protocolToken.safeTransferFrom(msg.sender, address(this), _amount);
 
         userBets[msg.sender][_outcomeIndex] += _amount;
         userTotalBets[msg.sender] += _amount; // Update user's total bets
@@ -151,7 +151,7 @@ contract Event is ReentrancyGuard {
      * @param _collateralAmount The new protocol fee percentage.
      */
     function setBetLimit(uint256 _collateralAmount) external onlyCollateralManager {
-        bettingLimit = CollateralManager(collateralManager).computeBetLimit(creator, _collateralAmount);
+        bettingLimit = EventManager(collateralManager).computeBetLimit(creator, _collateralAmount);
     }
 
     /**
@@ -159,7 +159,7 @@ contract Event is ReentrancyGuard {
      */
     function closeEvent() external onlyCollateralManager {
         require(
-            status == EventStatus.Resolved || status == EventStatus.Cancelled,
+            status == EventStatus.Resolved,
             "Event not resolved or cancelled"
         );
         require(block.timestamp > endTime, "Event has not ended yet");
@@ -222,9 +222,9 @@ contract Event is ReentrancyGuard {
         require(hasBet, "Only participants can dispute");
 
         disputeCollateral = (totalStaked * 10) / 100; // 10% of total staked
-        require(bettingToken.balanceOf(msg.sender) >= disputeCollateral, "Insufficient balance to create dispute");
+        require(protocolToken.balanceOf(msg.sender) >= disputeCollateral, "Insufficient balance to create dispute");
 
-        bettingToken.safeTransferFrom(msg.sender, address(this), disputeCollateral);
+        protocolToken.safeTransferFrom(msg.sender, address(this), disputeCollateral);
         disputeStatus = DisputeStatus.Disputed;
         disputingUser = msg.sender;
         disputeReason = _reason;
@@ -251,7 +251,7 @@ contract Event is ReentrancyGuard {
         uint256 userPayout = userStake + (userStake * netLoot) / outcomeStakes[winningOutcome];
 
         // Transfer payout to user
-        bettingToken.safeTransfer(msg.sender, userPayout);
+        protocolToken.safeTransfer(msg.sender, userPayout);
 
         hasClaimed[msg.sender] = true;
 
@@ -274,7 +274,7 @@ contract Event is ReentrancyGuard {
         totalStaked -= userStake;
 
         // Transfer tokens back to user
-        bettingToken.safeTransfer(msg.sender, userStake);
+        protocolToken.safeTransfer(msg.sender, userStake);
     }
 
     /**
@@ -286,8 +286,8 @@ contract Event is ReentrancyGuard {
         uint256 loot = totalStaked - winningStake;
         uint256 fee = (loot * protocolFeePercentage) / 100;
 
-       bettingToken.safeTransfer(protocolFeeRecipient, fee / 2);
-       bettingToken.safeTransfer(creator, fee / 2);
+       protocolToken.safeTransfer(protocolFeeRecipient, fee / 2);
+       protocolToken.safeTransfer(creator, fee / 2);
     }
 
     /**
@@ -315,9 +315,9 @@ contract Event is ReentrancyGuard {
             winningOutcome = _finalOutcome;
         } else {
             // 50% User's collateral is transferred to the event creator
-            bettingToken.safeTransfer(creator, disputeCollateral / 2);
+            protocolToken.safeTransfer(creator, disputeCollateral / 2);
             // 50% User's collateral is transferred to the governance
-            bettingToken.safeTransfer(CollateralManager(collateralManager).protocolFeeRecipient(), disputeCollateral / 2);
+            protocolToken.safeTransfer(EventManager(collateralManager).protocolFeeRecipient(), disputeCollateral / 2);
         }
 
         emit DisputeResolved(winningOutcome, _finalOutcome);

@@ -7,15 +7,15 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Event} from "./Event.sol";
 import "./Governance.sol";
 
-contract CollateralManager is ReentrancyGuard {
+contract EventManager is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    string public constant VERSION = "0.0.4";
+    string public constant VERSION = "0.0.5";
     address public protocolFeeRecipient;
     uint256 public bettingMultiplier = 5;
-    address eventFactory;
+    address[] public allEvents;
 
-    IERC20 public collateralToken;
+    IERC20 public protocolToken;
 
     // Mapping from event address to collateral amount
     mapping(address => uint256) public collateralBalances; // Key: eventAddress
@@ -28,6 +28,7 @@ contract CollateralManager is ReentrancyGuard {
     event CollateralLocked(address indexed eventAddress, uint256 amount);
     event CollateralReleased(address indexed eventAddress, uint256 amount);
     event CollateralForfeited(address indexed eventAddress, uint256 amount);
+    event EventCreated(address indexed eventAddress, address indexed creator, uint256 eventId);
     event EventClosed(address indexed eventAddress);
 
     modifier onlyOwner() {
@@ -45,19 +46,80 @@ contract CollateralManager is ReentrancyGuard {
         _;
     }
 
-    modifier onlyEventFactoryContract() {
-        require(msg.sender == eventFactory, "Only the associated event contract can call");
-        _;
-    }
-
-    constructor(address _collateralToken, address _governance, address _protocolFeeRecipient) {
+    constructor(address _protocolToken, address _governance, address _protocolFeeRecipient) {
         protocolFeeRecipient = _protocolFeeRecipient;
-        collateralToken = IERC20(_collateralToken);
+        protocolToken = IERC20(_protocolToken);
         governance = Governance(_governance);
     }
 
-    function setEventFactory(address _eventFactory) external onlyOwner {
-        eventFactory = _eventFactory;
+    function createEvent(
+        string memory _title,
+        string memory _description,
+        string memory _category,
+        string[] memory _outcomes,
+        uint256 _startTime,
+        uint256 _endTime,
+        uint256 _collateralAmount
+    ) external returns (address eventAddress, uint256 eventId) {
+        require(_collateralAmount > 0, "Collateral amount must be greater than zero");
+        require(_startTime >= block.timestamp, "Start time must be in future");
+        require(_endTime > _startTime, "End time must be after start time");
+        require(_outcomes.length >= 2, "At least two outcomes required");
+
+        // Deploy a new Event contract
+        eventId = allEvents.length;
+        Event newEvent = new Event(
+            eventId,
+            _title,
+            _description,
+            _category,
+            _outcomes,
+            _startTime,
+            _endTime,
+            msg.sender,
+            _collateralAmount,
+            address(this),
+            address(protocolToken)
+        );
+
+        eventAddress = address(newEvent);
+
+        initializeCreatorMultiplier(msg.sender);
+
+        // Transfer collateral from the creator to the CollateralManager for this event
+        lockCollateral(eventAddress, msg.sender, _collateralAmount);
+
+        allEvents.push(eventAddress);
+
+        emit EventCreated(eventAddress, msg.sender, eventId);
+    }
+
+    function getAllOpenEvents() external view returns (address[] memory) {
+        uint256 openEventCount = 0;
+
+        // First, count how many open events there are
+        for (uint256 i = 0; i < allEvents.length; i++) {
+            if (Event(allEvents[i]).status() == Event.EventStatus.Open) {
+                openEventCount++;
+            }
+        }
+
+        // Now, create an array of the correct size
+        address[] memory openEvents = new address[](openEventCount);
+        uint256 index = 0;
+        for (uint256 i = 0; i < allEvents.length; i++) {
+            if (Event(allEvents[i]).status() == Event.EventStatus.Open) {
+                openEvents[index] = allEvents[i];
+                index++;
+            }
+        }
+
+        return openEvents;
+    }
+
+    function getEvent(uint256 eventId) external view returns (address eventAddress) {
+        require(eventId < allEvents.length, "Invalid event ID");
+        return allEvents[eventId];
     }
 
     /**
@@ -69,8 +131,7 @@ contract CollateralManager is ReentrancyGuard {
 
         // Ensure the event is still open and the end time has passed
         require(
-            eventContract.status() == Event.EventStatus.Resolved
-                || eventContract.status() == Event.EventStatus.Cancelled,
+            eventContract.status() == Event.EventStatus.Resolved,
             "Event is not resolved or cancelled"
         );
 
@@ -87,11 +148,16 @@ contract CollateralManager is ReentrancyGuard {
      * @param _creator The address of the event creator.
      * @param _amount The amount of collateral to lock.
      */
-    function lockCollateral(address _eventAddress, address _creator, uint256 _amount) external onlyEventFactoryContract {
+    function lockCollateral(address _eventAddress, address _creator, uint256 _amount) internal {
+        require(protocolToken.balanceOf(_creator) >= _amount, "Insufficient balance for collateral");
+        require(
+            protocolToken.allowance(_creator, address(this)) >= _amount,
+            "Insufficient allowance for collateral"
+        );
         require(!isCollateralLocked[_eventAddress], "Collateral already locked for this event");
 
         // Transfer collateral tokens from the creator to this contract
-        collateralToken.safeTransferFrom(_creator, address(this), _amount);
+        protocolToken.safeTransferFrom(_creator, address(this), _amount);
 
         collateralBalances[_eventAddress] += _amount;
         isCollateralLocked[_eventAddress] = true;
@@ -108,7 +174,7 @@ contract CollateralManager is ReentrancyGuard {
         require(isCollateralLocked[_eventAddress], "No collateral locked for this event");
 
         // Transfer additional collateral tokens from the creator to this contract
-        collateralToken.safeTransferFrom(Event(_eventAddress).creator(), address(this), _amount);
+        protocolToken.safeTransferFrom(Event(_eventAddress).creator(), address(this), _amount);
         collateralBalances[_eventAddress] += _amount;
 
         Event(_eventAddress).setBetLimit(collateralBalances[_eventAddress]);
@@ -190,9 +256,12 @@ contract CollateralManager is ReentrancyGuard {
         creatorsTrustMultiplier[eventContract.creator()] = creatorsTrustMultiplier[eventContract.creator()] + 1;
 
         // Transfer collateral back to the creator
-        collateralToken.safeTransfer(Event(_eventAddress).creator(), amount);
+        protocolToken.safeTransfer(Event(_eventAddress).creator(), amount);
 
-        closeEvent(_eventAddress);
+        if (eventContract.status() == Event.EventStatus.Resolved) {
+            closeEvent(_eventAddress);
+        }
+
         emit CollateralReleased(_eventAddress, amount);
     }
 
@@ -212,7 +281,7 @@ contract CollateralManager is ReentrancyGuard {
         // Transfer collateral to dispute creator
         uint256 protocolDisputeFee = amount / 10;
         if (Event(_eventAddress).disputeStatus() == Event.DisputeStatus.Disputed) {
-            collateralToken.safeTransfer(Event(_eventAddress).disputingUser(), protocolDisputeFee);
+            protocolToken.safeTransfer(Event(_eventAddress).disputingUser(), protocolDisputeFee);
         }
 
         if (creatorsTrustMultiplier[eventContract.creator()] > 0) {
@@ -222,13 +291,23 @@ contract CollateralManager is ReentrancyGuard {
         }
 
         // Transfer collateral to protocol fee recipient
-        collateralToken.safeTransfer(protocolFeeRecipient, protocolDisputeFee);
+        protocolToken.safeTransfer(protocolFeeRecipient, protocolDisputeFee);
 
         // Burn remaining collateral
-        collateralToken.safeTransfer(address(0), amount - (2 * protocolDisputeFee));
+        protocolToken.safeTransfer(address(0), amount - (2 * protocolDisputeFee));
 
         closeEvent(_eventAddress);
         emit CollateralForfeited(_eventAddress, amount);
+    }
+
+    /**
+     * @notice Initializes the trust multiplier for a creator.
+     * @param creator The address of the creator.
+     */
+    function initializeCreatorMultiplier(address creator) internal {
+        if (creatorsTrustMultiplier[creator] == type(int256).min) {
+            creatorsTrustMultiplier[creator] = 0;
+        }
     }
 
     /**
@@ -239,9 +318,8 @@ contract CollateralManager is ReentrancyGuard {
 
         if (creatorMultiplier < -1) {
             uint256 divisor = uint256(-creatorMultiplier);
-            require(divisor != 0, "Invalid creator multiplier");
             return collateralAmount / divisor;
-        }else if (creatorMultiplier == -1) {
+        } else if (creatorMultiplier == -1) {
             return collateralAmount;
         } else if (creatorMultiplier == 0) {
             return bettingMultiplier * collateralAmount;
