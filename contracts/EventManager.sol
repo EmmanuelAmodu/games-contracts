@@ -12,7 +12,7 @@ contract EventManager is ReentrancyGuard {
 
     string public constant VERSION = "0.0.5";
     address public protocolFeeRecipient;
-    uint256 public bettingMultiplier = 5;
+    uint256 public bettingMultiplier = 100;
     address[] public allEvents;
 
     IERC20 public protocolToken;
@@ -196,8 +196,11 @@ contract EventManager is ReentrancyGuard {
             "Event is not resolved or canceled"
         );
 
-        // Transfer fee to governance and creator
-        _event.payFees(protocolFeeRecipient);
+        if (_event.status() == Event.EventStatus.Resolved) {
+            require(_event.disputeStatus() != Event.DisputeStatus.Disputed, "Event is disputed");
+            // Transfer fee to governance and creator
+            _event.payFees(protocolFeeRecipient);
+        }
 
         // Release collateral to the creator
         releaseCollateral(_eventAddress);

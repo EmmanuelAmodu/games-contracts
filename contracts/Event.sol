@@ -235,8 +235,9 @@ contract Event is ReentrancyGuard {
     /**
      * @notice Allows users who bet on the winning outcome to claim their payouts.
      */
-    function claimPayout() external inStatus(EventStatus.Closed) nonReentrant {
+    function claimPayout() external nonReentrant {
         require(block.timestamp > disputeDeadline, "Dispute period not over");
+        require(status == EventStatus.Resolved || status == EventStatus.Closed, "Event not resolved or closed");
         require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
         require(!hasClaimed[msg.sender], "Payout already claimed");
 
