@@ -10,7 +10,7 @@ import "./Governance.sol";
 contract EventManager is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    string public constant VERSION = "0.0.5";
+    string public constant VERSION = "0.0.6";
     address public protocolFeeRecipient;
     uint256 public bettingMultiplier = 100;
     address[] public allEvents;
@@ -22,7 +22,7 @@ contract EventManager is ReentrancyGuard {
     mapping(address => bool) public isCollateralLocked; // Key: eventAddress
     mapping(address => int256) public creatorsTrustMultiplier; // Key: creator
 
-    // For simplicity, assume protocol fee recipient can manage disputes
+    // Governance contract
     Governance public governance;
 
     event CollateralLocked(address indexed eventAddress, uint256 amount);
@@ -32,26 +32,33 @@ contract EventManager is ReentrancyGuard {
     event EventClosed(address indexed eventAddress);
 
     modifier onlyOwner() {
-        require(msg.sender == governance.owner(), "CollateralManager: Only owner can call");
+        require(msg.sender == governance.owner(), "Only owner can call");
         _;
     }
 
     modifier onlyApprovedAdmin() {
-        require(governance.approvedAdmins(msg.sender), "CollateralManager: Only approved admin can call");
+        require(governance.approvedAdmins(msg.sender), "Only approved admin can call");
         _;
     }
 
     modifier onlyEventCreator(address _eventAddress) {
-        require(msg.sender == Event(_eventAddress).creator(), "CollateralManager: Only event creator can call");
+        require(msg.sender == Event(_eventAddress).creator(), "Only event creator can call");
         _;
     }
 
     constructor(address _protocolToken, address _governance, address _protocolFeeRecipient) {
+        require(_protocolToken != address(0), "Invalid protocol token address");
+        require(_governance != address(0), "Invalid governance address");
+        require(_protocolFeeRecipient != address(0), "Invalid fee recipient address");
+
         protocolFeeRecipient = _protocolFeeRecipient;
         protocolToken = IERC20(_protocolToken);
         governance = Governance(_governance);
     }
 
+    /**
+     * @notice Creates a new event.
+     */
     function createEvent(
         string memory _title,
         string memory _description,
@@ -60,9 +67,9 @@ contract EventManager is ReentrancyGuard {
         uint256 _startTime,
         uint256 _endTime,
         uint256 _collateralAmount
-    ) external returns (address eventAddress, uint256 eventId) {
+    ) external nonReentrant returns (address eventAddress, uint256 eventId) {
         require(_collateralAmount > 0, "Collateral amount must be greater than zero");
-        require(_startTime >= block.timestamp, "Start time must be in future");
+        require(_startTime >= block.timestamp + 2 hours, "Start time must be at least 2 hours in the future");
         require(_endTime > _startTime, "End time must be after start time");
         require(_outcomes.length >= 2, "At least two outcomes required");
 
@@ -86,7 +93,7 @@ contract EventManager is ReentrancyGuard {
 
         initializeCreatorMultiplier(msg.sender);
 
-        // Transfer collateral from the creator to the CollateralManager for this event
+        // Transfer collateral from the creator to the EventManager for this event
         lockCollateral(eventAddress, msg.sender, _collateralAmount);
 
         allEvents.push(eventAddress);
@@ -94,17 +101,18 @@ contract EventManager is ReentrancyGuard {
         emit EventCreated(eventAddress, msg.sender, eventId);
     }
 
+    /**
+     * @notice Returns all open events.
+     */
     function getAllOpenEvents() external view returns (address[] memory) {
         uint256 openEventCount = 0;
 
-        // First, count how many open events there are
         for (uint256 i = 0; i < allEvents.length; i++) {
             if (Event(allEvents[i]).status() == Event.EventStatus.Open) {
                 openEventCount++;
             }
         }
 
-        // Now, create an array of the correct size
         address[] memory openEvents = new address[](openEventCount);
         uint256 index = 0;
         for (uint256 i = 0; i < allEvents.length; i++) {
@@ -117,22 +125,25 @@ contract EventManager is ReentrancyGuard {
         return openEvents;
     }
 
+    /**
+     * @notice Returns the address of an event by its ID.
+     */
     function getEvent(uint256 eventId) external view returns (address eventAddress) {
         require(eventId < allEvents.length, "Invalid event ID");
         return allEvents[eventId];
     }
 
     /**
-     * @notice Closes an event on behalf of the event creator.
+     * @notice Closes an event.
      * @param _eventAddress The address of the event contract.
      */
     function closeEvent(address _eventAddress) internal {
         Event eventContract = Event(_eventAddress);
 
-        // Ensure the event is still open and the end time has passed
+        // Ensure the event is resolved
         require(
             eventContract.status() == Event.EventStatus.Resolved,
-            "Event is not resolved or cancelled"
+            "Event is not resolved"
         );
 
         if (eventContract.status() == Event.EventStatus.Resolved) {
@@ -144,9 +155,6 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Locks collateral for a specific event.
-     * @param _eventAddress The address of the event contract.
-     * @param _creator The address of the event creator.
-     * @param _amount The amount of collateral to lock.
      */
     function lockCollateral(address _eventAddress, address _creator, uint256 _amount) internal {
         require(protocolToken.balanceOf(_creator) >= _amount, "Insufficient balance for collateral");
@@ -167,11 +175,10 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Increases the locked collateral for a specific event.
-     * @param _eventAddress The address of the event contract.
-     * @param _amount The amount of additional collateral to lock.
      */
-    function increaseCollateral(address _eventAddress, uint256 _amount) public onlyEventCreator(_eventAddress) {
+    function increaseCollateral(address _eventAddress, uint256 _amount) public onlyEventCreator(_eventAddress) nonReentrant {
         require(isCollateralLocked[_eventAddress], "No collateral locked for this event");
+        require(_amount > 0, "Amount must be greater than zero");
 
         // Transfer additional collateral tokens from the creator to this contract
         protocolToken.safeTransferFrom(Event(_eventAddress).creator(), address(this), _amount);
@@ -184,7 +191,6 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Allows the event creator to claim the locked collateral after the event is resolved.
-     * @param _eventAddress The address of the event contract.
      */
     function claimCollateral(address _eventAddress) external onlyEventCreator(_eventAddress) nonReentrant {
         Event _event = Event(_eventAddress);
@@ -202,17 +208,20 @@ contract EventManager is ReentrancyGuard {
             _event.payFees(protocolFeeRecipient);
         }
 
+        // Burn loot if no user wins
+        _event.burnLootIfNoUserWin();
+
         // Release collateral to the creator
         releaseCollateral(_eventAddress);
     }
 
     /**
      * @notice Allows the event creator to cancel an open event.
-     * @param _eventAddress The address of the event contract.
      */
     function cancelEvent(address _eventAddress) external onlyEventCreator(_eventAddress) nonReentrant {
         Event _event = Event(_eventAddress);
         require(_event.status() == Event.EventStatus.Open, "Can only cancel open events");
+        require(block.timestamp < _event.startTime() - 1 hours, "Cannot cancel event within 1 hour of start time");
 
         _event.cancelEvent();
 
@@ -222,18 +231,16 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Allows governance to resolve a dispute.
-     * @param _eventAddress The address of the event contract.
-     * @param _finalOutCome The final outcome of the event.
      */
-    function resolveDispute(address _eventAddress, uint256 _finalOutCome) external onlyApprovedAdmin nonReentrant {
+    function resolveDispute(address _eventAddress, uint256 _finalOutcome) external onlyApprovedAdmin nonReentrant {
         Event _event = Event(_eventAddress);
         require(_event.disputeStatus() == Event.DisputeStatus.Disputed, "Event is not disputed");
 
         // Update the dispute status in the Event contract before proceeding
-        _event.resolveDispute(_finalOutCome);
+        _event.resolveDispute(_finalOutcome);
 
         // Now you can safely release or forfeit collateral
-        if (_finalOutCome != _event.winningOutcome()) {
+        if (_finalOutcome != _event.winningOutcome()) {
             forfeitCollateral(_eventAddress);
         } else {
             releaseCollateral(_eventAddress);
@@ -242,24 +249,25 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Releases collateral back to the event creator.
-     * @param _eventAddress The address of the event contract.
      */
     function releaseCollateral(address _eventAddress) internal {
         Event eventContract = Event(_eventAddress);
         uint256 amount = collateralBalances[_eventAddress];
 
         require(
-            eventContract.disputeStatus() != Event.DisputeStatus.Disputed, "Cannot release collateral during dispute"
+            eventContract.disputeStatus() != Event.DisputeStatus.Disputed,
+            "Cannot release collateral during dispute"
         );
         require(isCollateralLocked[_eventAddress], "No collateral to release for this event");
         require(amount > 0, "No collateral balance for this event");
 
+        // Update state before external calls
         collateralBalances[_eventAddress] = 0;
         isCollateralLocked[_eventAddress] = false;
-        creatorsTrustMultiplier[eventContract.creator()] = creatorsTrustMultiplier[eventContract.creator()] + 1;
+        creatorsTrustMultiplier[eventContract.creator()] += 1;
 
         // Transfer collateral back to the creator
-        protocolToken.safeTransfer(Event(_eventAddress).creator(), amount);
+        protocolToken.safeTransfer(eventContract.creator(), amount);
 
         if (eventContract.status() == Event.EventStatus.Resolved) {
             closeEvent(_eventAddress);
@@ -270,7 +278,6 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Forfeits the event's collateral in case of a valid dispute.
-     * @param _eventAddress The address of the event contract.
      */
     function forfeitCollateral(address _eventAddress) internal {
         Event eventContract = Event(_eventAddress);
@@ -278,19 +285,22 @@ contract EventManager is ReentrancyGuard {
         uint256 amount = collateralBalances[_eventAddress];
         require(amount > 0, "No collateral balance for this event");
 
+        // Update state before external calls
         collateralBalances[_eventAddress] = 0;
         isCollateralLocked[_eventAddress] = false;
 
         // Transfer collateral to dispute creator
         uint256 protocolDisputeFee = amount / 10;
-        if (Event(_eventAddress).disputeStatus() == Event.DisputeStatus.Disputed) {
-            protocolToken.safeTransfer(Event(_eventAddress).disputingUser(), protocolDisputeFee);
-        }
+
+        protocolToken.safeTransfer(eventContract.disputingUser(), protocolDisputeFee);
 
         if (creatorsTrustMultiplier[eventContract.creator()] > 0) {
             creatorsTrustMultiplier[eventContract.creator()] = -1;
         } else {
-            creatorsTrustMultiplier[eventContract.creator()] = creatorsTrustMultiplier[eventContract.creator()] - 1;
+            // Prevent underflow
+            if (creatorsTrustMultiplier[eventContract.creator()] > type(int256).min + 1) {
+                creatorsTrustMultiplier[eventContract.creator()] -= 1;
+            }
         }
 
         // Transfer collateral to protocol fee recipient
@@ -305,25 +315,24 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Initializes the trust multiplier for a creator.
-     * @param creator The address of the creator.
      */
     function initializeCreatorMultiplier(address creator) internal {
-        if (creatorsTrustMultiplier[creator] == type(int256).min) {
-            creatorsTrustMultiplier[creator] = 0;
+        if (creatorsTrustMultiplier[creator] == int256(0)) {
+            creatorsTrustMultiplier[creator] = 1;
         }
     }
 
     /**
-     * @notice Returns the betting multiplier.
+     * @notice Computes the betting limit for an event.
      */
     function computeBetLimit(address creator, uint256 collateralAmount) external view returns (uint256) {
         int256 creatorMultiplier = creatorsTrustMultiplier[creator];
 
-        if (creatorMultiplier < -1) {
+        if (creatorMultiplier <= -1) {
+            require(creatorMultiplier > type(int256).min, "Creator multiplier too low");
             uint256 divisor = uint256(-creatorMultiplier);
+            require(divisor > 0, "Invalid divisor");
             return collateralAmount / divisor;
-        } else if (creatorMultiplier == -1) {
-            return collateralAmount;
         } else if (creatorMultiplier == 0) {
             return bettingMultiplier * collateralAmount;
         }
@@ -332,7 +341,6 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Allows governance to set a new betting multiplier.
-     * @param _newMultiplier The new betting multiplier.
      */
     function setBettingMultiplier(uint256 _newMultiplier) external onlyOwner {
         require(_newMultiplier > 0, "Multiplier must be greater than zero");
@@ -341,7 +349,6 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Allows governance to update the protocol fee recipient.
-     * @param _newRecipient The address of the new fee recipient.
      */
     function setProtocolFeeRecipient(address _newRecipient) external onlyOwner {
         require(_newRecipient != address(0), "Invalid address");
@@ -350,10 +357,28 @@ contract EventManager is ReentrancyGuard {
 
     /**
      * @notice Allows governance to transfer governance rights.
-     * @param _newGovernance The address of the new governance.
      */
     function transferGovernance(address _newGovernance) external onlyOwner {
         require(_newGovernance != address(0), "Invalid address");
         governance = Governance(_newGovernance);
+    }
+
+    /**
+     * @notice Increases the creator's trust multiplier.
+     */
+    function increaseCreatorsTrustMultiplier(address creator, uint256 amount) external onlyOwner {
+        initializeCreatorMultiplier(creator);
+        int256 newMultiplier = creatorsTrustMultiplier[creator] + int256(amount);
+        creatorsTrustMultiplier[creator] = newMultiplier;
+    }
+
+    /**
+     * @notice Decreases the creator's trust multiplier.
+     */
+    function decreaseCreatorsTrustMultiplier(address creator, uint256 amount) external onlyOwner {
+        initializeCreatorMultiplier(creator);
+        int256 newMultiplier = creatorsTrustMultiplier[creator] - int256(amount);
+        require(newMultiplier > type(int256).min, "Underflow error");
+        creatorsTrustMultiplier[creator] = newMultiplier;
     }
 }

@@ -9,7 +9,7 @@ import "./EventManager.sol";
 contract Event is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    string public constant VERSION = "0.0.5";
+    string public constant VERSION = "0.0.6";
     enum EventStatus {
         Open,
         Closed,
@@ -30,11 +30,12 @@ contract Event is ReentrancyGuard {
     string public thumbnailUrl;
     string public streamingUrl;
     string[] public outcomes;
+    uint256 public createTime;
     uint256 public startTime;
     uint256 public endTime;
     address public creator;
     uint256 public collateralAmount;
-    address public collateralManager;
+    address public eventManager;
     EventStatus public status;
     uint256 public totalStaked;
     uint256 public bettingLimit;
@@ -52,7 +53,6 @@ contract Event is ReentrancyGuard {
     IERC20 public protocolToken;
 
     // Dispute variables
-    // V2: Multiple users can create dispute till disputeCollateral to event collateral is reached
     DisputeStatus public disputeStatus;
     uint256 public disputeDeadline;
     address public disputingUser;
@@ -69,12 +69,12 @@ contract Event is ReentrancyGuard {
     event EventClosed(uint256 eventId);
 
     modifier onlyCreator() {
-        require(msg.sender == creator, "Only event creator");
+        require(msg.sender == creator, "Only event creator can call");
         _;
     }
 
-    modifier onlyCollateralManager() {
-        require(msg.sender == collateralManager, "Only collateral manager can call");
+    modifier onlyEventManager() {
+        require(msg.sender == eventManager, "Only event manager can call");
         _;
     }
 
@@ -83,6 +83,9 @@ contract Event is ReentrancyGuard {
         _;
     }
 
+    /**
+     * @notice Initializes the event contract.
+     */
     constructor(
         uint256 _eventId,
         string memory _title,
@@ -93,12 +96,15 @@ contract Event is ReentrancyGuard {
         uint256 _endTime,
         address _creator,
         uint256 _collateralAmount,
-        address _collateralManager,
+        address _eventManager,
         address _protocolToken
     ) {
         require(_startTime >= block.timestamp, "Start time must be in future");
         require(_endTime > _startTime, "End time must be after start time");
         require(_outcomes.length >= 2, "At least two outcomes required");
+        require(_creator != address(0), "Invalid creator address");
+        require(_eventManager != address(0), "Invalid event manager address");
+        require(_protocolToken != address(0), "Invalid protocol token address");
 
         eventId = _eventId;
         title = _title;
@@ -109,25 +115,27 @@ contract Event is ReentrancyGuard {
         endTime = _endTime;
         creator = _creator;
         collateralAmount = _collateralAmount;
-        collateralManager = _collateralManager;
+        eventManager = _eventManager;
         status = EventStatus.Open;
+        createTime = block.timestamp;
 
         protocolToken = IERC20(_protocolToken);
 
         // Calculate betting limit
-        bettingLimit = EventManager(collateralManager).computeBetLimit(creator, _collateralAmount);
+        bettingLimit = EventManager(eventManager).computeBetLimit(creator, collateralAmount);
     }
 
     /**
      * @notice Allows users to place bets on the event.
-     * @param _outcomeIndex Outcome to bet against
+     * @param _outcomeIndex Outcome to bet on
      * @param _amount Amount to bet
      */
-    function placeBet(uint256 _outcomeIndex, uint256 _amount) external inStatus(EventStatus.Open) {
+    function placeBet(uint256 _outcomeIndex, uint256 _amount) external nonReentrant inStatus(EventStatus.Open) {
         require(block.timestamp < startTime, "Betting is closed");
         require(totalStaked + _amount <= bettingLimit, "Betting limit reached");
         require(_outcomeIndex < outcomes.length, "Invalid outcome index");
         require(_amount > 0, "Bet amount must be greater than zero");
+        require(msg.sender != address(0), "Invalid user address");
 
         require(
             userTotalBets[msg.sender] + _amount <= bettingLimit / 10,
@@ -147,21 +155,17 @@ contract Event is ReentrancyGuard {
     }
 
     /**
-     * @notice Sets the protocol fee percentage. Can only be called by the governance.
-     * @param _collateralAmount The new protocol fee percentage.
+     * @notice Sets the betting limit based on new collateral amount. Can only be called by the EventManager.
+     * @param _collateralAmount The new collateral amount.
      */
-    function setBetLimit(uint256 _collateralAmount) external onlyCollateralManager {
-        bettingLimit = EventManager(collateralManager).computeBetLimit(creator, _collateralAmount);
+    function setBetLimit(uint256 _collateralAmount) external onlyEventManager {
+        bettingLimit = EventManager(eventManager).computeBetLimit(creator, _collateralAmount);
     }
 
     /**
-     * @notice Closes the event for betting. Can only be called by the Collateral Manager.
+     * @notice Closes the event for betting. Can only be called by the EventManager.
      */
-    function closeEvent() external onlyCollateralManager {
-        require(
-            status == EventStatus.Resolved,
-            "Event not resolved or cancelled"
-        );
+    function closeEvent() external onlyEventManager inStatus(EventStatus.Resolved) {
         require(block.timestamp > endTime, "Event has not ended yet");
 
         status = EventStatus.Closed;
@@ -188,13 +192,13 @@ contract Event is ReentrancyGuard {
      * @notice Submits the outcome of the event. Collateral is not released immediately.
      * @param _winningOutcome The index of the winning outcome.
      */
-    function submitOutcome(uint256 _winningOutcome) external inStatus(EventStatus.Open) onlyCreator {
+    function submitOutcome(uint256 _winningOutcome) external onlyCreator nonReentrant inStatus(EventStatus.Open) {
         require(block.timestamp > endTime, "Event has not ended yet");
         require(_winningOutcome < outcomes.length, "Invalid outcome index");
         winningOutcome = _winningOutcome;
         status = EventStatus.Resolved;
 
-        // Set dispute deadline to 1 hours from now
+        // Set dispute deadline to 1 hour from now
         disputeDeadline = block.timestamp + 1 hours;
         disputeStatus = DisputeStatus.None;
 
@@ -203,12 +207,14 @@ contract Event is ReentrancyGuard {
     }
 
     /**
-     * @notice Allows users to create a dispute within 1 hours after the outcome is submitted.
+     * @notice Allows users to create a dispute within 1 hour after the outcome is submitted.
      * @param _reason A brief reason for the dispute.
      */
-    function createDispute(string calldata _reason) external inStatus(EventStatus.Resolved) nonReentrant {
+    function createDispute(string calldata _reason) external nonReentrant inStatus(EventStatus.Resolved) {
         require(block.timestamp <= disputeDeadline, "Dispute period has ended");
         require(disputeStatus == DisputeStatus.None, "Dispute already raised");
+        require(bytes(_reason).length > 0, "Dispute reason required");
+        require(msg.sender != address(0), "Invalid user address");
 
         // Users must have participated in the event to raise a dispute
         bool hasBet = false;
@@ -223,6 +229,10 @@ contract Event is ReentrancyGuard {
 
         disputeCollateral = (totalStaked * 10) / 100; // 10% of total staked
         require(protocolToken.balanceOf(msg.sender) >= disputeCollateral, "Insufficient balance to create dispute");
+        require(
+            protocolToken.allowance(msg.sender, address(this)) >= disputeCollateral,
+            "Insufficient allowance to create dispute"
+        );
 
         protocolToken.safeTransferFrom(msg.sender, address(this), disputeCollateral);
         disputeStatus = DisputeStatus.Disputed;
@@ -240,9 +250,14 @@ contract Event is ReentrancyGuard {
         require(status == EventStatus.Resolved || status == EventStatus.Closed, "Event not resolved or closed");
         require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
         require(!hasClaimed[msg.sender], "Payout already claimed");
+        require(msg.sender != address(0), "Invalid user address");
 
         uint256 userStake = userBets[msg.sender][winningOutcome];
         require(userStake > 0, "No winning bet to claim");
+        require(outcomeStakes[winningOutcome] > 0, "No stakes on winning outcome");
+
+        // Mark as claimed before external calls to prevent reentrancy
+        hasClaimed[msg.sender] = true;
 
         // Calculate user's share
         uint256 loot = totalStaked - outcomeStakes[winningOutcome];
@@ -254,8 +269,6 @@ contract Event is ReentrancyGuard {
         // Transfer payout to user
         protocolToken.safeTransfer(msg.sender, userPayout);
 
-        hasClaimed[msg.sender] = true;
-
         emit PayoutClaimed(msg.sender, userPayout);
     }
 
@@ -263,10 +276,11 @@ contract Event is ReentrancyGuard {
      * @notice Allows users to withdraw their bets if the event is cancelled.
      * @param _outcomeIndex The index of the outcome to withdraw the bet from.
      */
-    function withdrawBet(uint256 _outcomeIndex) external inStatus(EventStatus.Cancelled) {
+    function withdrawBet(uint256 _outcomeIndex) external nonReentrant inStatus(EventStatus.Cancelled) {
         require(_outcomeIndex < outcomes.length, "Invalid outcome index");
         uint256 userStake = userBets[msg.sender][_outcomeIndex];
         require(userStake > 0, "No bet to withdraw");
+        require(msg.sender != address(0), "Invalid user address");
 
         // Update mappings
         userBets[msg.sender][_outcomeIndex] = 0;
@@ -282,43 +296,44 @@ contract Event is ReentrancyGuard {
      * @notice Pays the fees to the protocol and the event creator.
      * @param protocolFeeRecipient The address to receive the protocol fees.
      */
-    function payFees(address protocolFeeRecipient) external onlyCollateralManager inStatus(EventStatus.Resolved) {
+    function payFees(address protocolFeeRecipient) external onlyEventManager inStatus(EventStatus.Resolved) {
+        require(protocolFeeRecipient != address(0), "Invalid fee recipient address");
+        require(outcomeStakes[winningOutcome] > 0, "No stakes on winning outcome");
+
         uint256 winningStake = outcomeStakes[winningOutcome];
         uint256 loot = totalStaked - winningStake;
         uint256 fee = (loot * protocolFeePercentage) / 100;
 
-       protocolToken.safeTransfer(protocolFeeRecipient, fee / 2);
-       protocolToken.safeTransfer(creator, fee / 2);
+        // Transfer fees
+        protocolToken.safeTransfer(protocolFeeRecipient, fee / 2);
+        protocolToken.safeTransfer(creator, fee / 2);
     }
 
     /**
      * @notice Cancels the event. Cannot be called after the event start time.
      */
-    function cancelEvent() external onlyCollateralManager inStatus(EventStatus.Open) {
+    function cancelEvent() external onlyEventManager inStatus(EventStatus.Open) {
         require(block.timestamp < startTime, "Cannot cancel after event start time");
-        require(status == EventStatus.Open, "Only opened event can be cancelled");
         status = EventStatus.Cancelled;
 
         emit EventCancelled();
     }
 
     /**
-     * @notice Resolves the dispute. Can be called by governance or an arbitrator.
+     * @notice Resolves the dispute. Can only be called by EventManager.
      * @param _finalOutcome The final outcome after dispute resolution.
      */
-    function resolveDispute(uint256 _finalOutcome) external onlyCollateralManager nonReentrant {
+    function resolveDispute(uint256 _finalOutcome) external onlyEventManager nonReentrant {
         require(disputeStatus == DisputeStatus.Disputed, "No dispute to resolve");
         require(_finalOutcome < outcomes.length, "Invalid outcome index");
 
+        // Update dispute status before external calls
         disputeStatus = DisputeStatus.Resolved;
 
         if (_finalOutcome != winningOutcome) {
             winningOutcome = _finalOutcome;
-        } else {
-            // 50% User's collateral is transferred to the event creator
-            protocolToken.safeTransfer(creator, disputeCollateral / 2);
-            // 50% User's collateral is transferred to the governance
-            protocolToken.safeTransfer(EventManager(collateralManager).protocolFeeRecipient(), disputeCollateral / 2);
+            // Emit event for outcome change
+            emit EventResolved(_finalOutcome);
         }
 
         emit DisputeResolved(winningOutcome, _finalOutcome);
@@ -343,6 +358,10 @@ contract Event is ReentrancyGuard {
         return outcomeStakes[_outcomeIndex];
     }
 
+    /**
+     * @notice Returns the odds for a given outcome.
+     * @param _outcomeIndex The index of the outcome.
+     */
     function getOdds(uint256 _outcomeIndex) external view returns (uint256) {
         require(_outcomeIndex < outcomes.length, "Invalid outcome index");
 
@@ -350,24 +369,41 @@ contract Event is ReentrancyGuard {
         uint256 outcomeStake = outcomeStakes[_outcomeIndex];
 
         if (outcomeStake == 0) {
-            return 0; // Avoid division by zero, odds are undefined
+            return type(uint256).max; // Represents infinite odds
         }
 
         return (otherStakes * 1e18) / outcomeStake; // Return odds scaled by 1e18
     }
 
     /**
-     * @notice Returns the event details.
+     * @notice Returns the event outcomes.
      */
     function getOutcomes() external view returns (string[] memory) {
         return outcomes;
     }
 
+    /**
+     * @notice Returns the number of stakers for each outcome.
+     */
     function getOutcomeStakers() external view returns (uint256[] memory) {
         uint256[] memory stakers = new uint256[](outcomes.length);
         for (uint256 i = 0; i < outcomes.length; i++) {
             stakers[i] = outcomeStakers[i];
         }
         return stakers;
+    }
+
+    /**
+     * @notice Burns the loot if no user wins.
+     */
+    function burnLootIfNoUserWin() external onlyEventManager {
+        uint256 winningOutcomeStakes = outcomeStakes[winningOutcome];
+        uint256 loot = totalStaked - winningOutcomeStakes;
+        // Burn loot if no user wins
+        if (winningOutcomeStakes == 0 && loot > 0) {
+            // Transfer loot to address(0)
+            protocolToken.safeTransfer(address(0), loot);
+            totalStaked -= loot;
+        }
     }
 }
