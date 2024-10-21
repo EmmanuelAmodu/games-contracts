@@ -1,4 +1,4 @@
-# Pepper Gambling Protocol White Paper
+# Pepper Prediction Market Protocol White Paper
 
 ## Table of Contents
 
