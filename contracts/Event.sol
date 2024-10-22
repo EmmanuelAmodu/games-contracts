@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {PepperBaseTokenV1} from "./interfaces/PepperBaseTokenV1.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./EventManager.sol";
 
 contract Event is ReentrancyGuard {
-    using SafeERC20 for IERC20;
-
-    string public constant VERSION = "0.0.9"; // Updated version
+    string public constant VERSION = "0.1.0"; // Updated version
 
     enum EventStatus {
         Open,
@@ -51,7 +48,7 @@ contract Event is ReentrancyGuard {
     uint256 public winningOutcome;
     uint256 public protocolFeePercentage = 10; // 10%
 
-    IERC20 public protocolToken;
+    PepperBaseTokenV1 public protocolToken;
 
     // Dispute variables
     DisputeStatus public disputeStatus;
@@ -88,6 +85,8 @@ contract Event is ReentrancyGuard {
     event ThumbnailUrlUpdated(string newThumbnailUrl);
     event StreamingUrlUpdated(string newStreamingUrl);
     event UnclaimedDisputeContributionsCollected(uint256 amount);
+    event DisputeContributionsForfeited(address indexed creator, uint256 amount);
+    event DisputeContributionsDistributed(uint256 toCreator, uint256 toProtocol, uint256 burnt);
 
     modifier onlyCreator() {
         require(msg.sender == creator, "Only event creator can call");
@@ -140,7 +139,7 @@ contract Event is ReentrancyGuard {
         status = EventStatus.Open;
         createTime = block.timestamp;
 
-        protocolToken = IERC20(_protocolToken);
+        protocolToken = PepperBaseTokenV1(_protocolToken);
 
         // Calculate betting limit
         bettingLimit = EventManager(eventManager).computeBetLimit(creator, collateralAmount);
@@ -164,7 +163,7 @@ contract Event is ReentrancyGuard {
         );
 
         // Transfer tokens before state changes to prevent reentrancy
-        protocolToken.safeTransferFrom(msg.sender, address(this), _amount);
+        protocolToken.transferFrom(msg.sender, address(this), _amount);
 
         // Update state variables
         userBets[msg.sender][_outcomeIndex] += _amount;
@@ -268,7 +267,7 @@ contract Event is ReentrancyGuard {
         }
 
         // Transfer tokens after state updates
-        protocolToken.safeTransferFrom(msg.sender, address(this), _amount);
+        protocolToken.transferFrom(msg.sender, address(this), _amount);
 
         // If total contributions meet or exceed the target, lock the dispute
         if (totalDisputeContributions >= disputeCollateralTarget) {
@@ -292,7 +291,7 @@ contract Event is ReentrancyGuard {
         disputingUsers[msg.sender] = 0;
 
         // Transfer tokens back to user
-        protocolToken.safeTransfer(msg.sender, contribution);
+        protocolToken.transfer(msg.sender, contribution);
 
         emit DisputeContributionRefunded(msg.sender, contribution);
     }
@@ -307,8 +306,23 @@ contract Event is ReentrancyGuard {
         uint256 totalContributions = totalDisputeContributions;
         totalDisputeContributions = 0;
 
-        // Transfer dispute contributions to the creator
-        protocolToken.safeTransfer(creator, totalContributions);
+        // Calculate distributions
+        uint256 toCreator = (totalContributions * 80) / 100;
+        uint256 toProtocol = (totalContributions * 10) / 100;
+        uint256 toBurn = totalContributions - toCreator - toProtocol; // Remaining amount
+
+        // Transfer dispute contributions accordingly
+        protocolToken.transfer(creator, toCreator);
+        protocolToken.transfer(EventManager(eventManager).protocolFeeRecipient(), toProtocol);
+
+        // Burn tokens by sending to zero address
+        protocolToken.burn(toBurn);
+
+        emit DisputeContributionsDistributed(toCreator, toProtocol, toBurn);
+    }
+
+    function resetTotalDisputeContributions() external onlyEventManager {
+        totalDisputeContributions = 0;
     }
 
     /**
@@ -333,7 +347,7 @@ contract Event is ReentrancyGuard {
 
         // Transfer unclaimed contributions to protocol fee recipient
         if (unclaimedContributions > 0) {
-            protocolToken.safeTransfer(EventManager(eventManager).protocolFeeRecipient(), unclaimedContributions);
+            protocolToken.transfer(EventManager(eventManager).protocolFeeRecipient(), unclaimedContributions);
         }
 
         emit UnclaimedDisputeContributionsCollected(unclaimedContributions);
@@ -381,7 +395,7 @@ contract Event is ReentrancyGuard {
         totalPayouts += userPayout;
 
         // Transfer payout to user
-        protocolToken.safeTransfer(msg.sender, userPayout);
+        protocolToken.transfer(msg.sender, userPayout);
 
         emit PayoutClaimed(msg.sender, userPayout);
     }
@@ -411,7 +425,7 @@ contract Event is ReentrancyGuard {
         totalStaked -= userStake;
 
         // Transfer tokens back to user
-        protocolToken.safeTransfer(msg.sender, userStake);
+        protocolToken.transfer(msg.sender, userStake);
 
         emit BetWithdrawn(msg.sender, userStake, _outcomeIndex);
     }
@@ -424,18 +438,19 @@ contract Event is ReentrancyGuard {
     function payFees(address protocolFeeRecipient, bool winningOutcomeChanged) external onlyEventManager inStatus(EventStatus.Resolved) {
         require(protocolFeeRecipient != address(0), "Invalid fee recipient address");
         uint256 winningStake = outcomeStakes[winningOutcome];
-        require(winningStake > 0, "No stakes on winning outcome");
 
-        uint256 loot = totalStaked - winningStake;
-        uint256 fee = (loot * protocolFeePercentage) / 100;
+        if (winningStake > 0) {
+            uint256 loot = totalStaked - winningStake;
+            uint256 fee = (loot * protocolFeePercentage) / 100;
 
-        if (disputeStatus == DisputeStatus.Resolved && winningOutcomeChanged) {
-            // Creator lost the dispute; protocol takes full fee
-            protocolToken.safeTransfer(protocolFeeRecipient, fee);
-        } else {
-            // Split fee between protocol and creator
-            protocolToken.safeTransfer(protocolFeeRecipient, fee / 2);
-            protocolToken.safeTransfer(creator, fee / 2);
+            if (disputeStatus == DisputeStatus.Resolved && winningOutcomeChanged) {
+                // Creator lost the dispute; protocol takes full fee
+                protocolToken.transfer(protocolFeeRecipient, fee);
+            } else {
+                // Split fee between protocol and creator
+                protocolToken.transfer(protocolFeeRecipient, fee / 2);
+                protocolToken.transfer(creator, fee / 2);
+            }
         }
     }
 

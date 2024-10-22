@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {PepperBaseTokenV1} from "./interfaces/PepperBaseTokenV1.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Event} from "./Event.sol";
 import "./Governance.sol";
 
 contract EventManager is ReentrancyGuard {
-    using SafeERC20 for IERC20;
-
-    string public constant VERSION = "0.1.0"; // Updated version
+    string public constant VERSION = "0.1.1";
     address public protocolFeeRecipient;
     uint256 public bettingMultiplier = 100;
     address[] public allEvents;
 
-    IERC20 public protocolToken;
+    PepperBaseTokenV1 public protocolToken;
 
     // Mapping from event address to collateral amount
     mapping(address => uint256) public collateralBalances; // Key: eventAddress
@@ -68,7 +65,7 @@ contract EventManager is ReentrancyGuard {
         require(_protocolFeeRecipient != address(0), "Invalid fee recipient address");
 
         protocolFeeRecipient = _protocolFeeRecipient;
-        protocolToken = IERC20(_protocolToken);
+        protocolToken = PepperBaseTokenV1(_protocolToken);
         governance = Governance(_governance);
     }
 
@@ -145,6 +142,13 @@ contract EventManager is ReentrancyGuard {
     }
 
     /**
+     * @notice Returns all events created by a specific creator.
+     */
+    function getAllCreatorEvents(address creator) external view returns (address[] memory) {
+        return creatorEvents[creator];
+    }
+
+    /**
      * @notice Returns the address of an event by its ID.
      */
     function getEvent(uint256 eventId) external view returns (address eventAddress) {
@@ -184,7 +188,7 @@ contract EventManager is ReentrancyGuard {
         require(!isCollateralLocked[_eventAddress], "Collateral already locked for this event");
 
         // Transfer collateral tokens from the creator to this contract
-        protocolToken.safeTransferFrom(_creator, address(this), _amount);
+        protocolToken.transferFrom(_creator, address(this), _amount);
 
         collateralBalances[_eventAddress] += _amount;
         isCollateralLocked[_eventAddress] = true;
@@ -201,7 +205,7 @@ contract EventManager is ReentrancyGuard {
         require(_amount <= 1e24, "Amount exceeds maximum limit"); // Example maximum
 
         // Transfer additional collateral tokens from the creator to this contract
-        protocolToken.safeTransferFrom(msg.sender, address(this), _amount);
+        protocolToken.transferFrom(msg.sender, address(this), _amount);
         collateralBalances[_eventAddress] += _amount;
 
         Event(_eventAddress).setBetLimit(collateralBalances[_eventAddress]);
@@ -276,15 +280,14 @@ contract EventManager is ReentrancyGuard {
 
             // Forfeit collateral
             forfeitCollateral(_eventAddress);
+
+            emit DisputeResolved(_eventAddress, _finalOutcome);
         } else {
-            // Dispute resolved in favor of creator, release collateral
-            releaseCollateral(_eventAddress);
-
-            // Transfer dispute contributions to the creator
+            // Transfer dispute contributions accordingly
             _event.collectDisputeContributionsForCreator();
-        }
 
-        emit DisputeResolved(_eventAddress, _finalOutcome);
+            emit DisputeResolved(_eventAddress, _finalOutcome);
+        }
     }
 
     /**
@@ -299,8 +302,19 @@ contract EventManager is ReentrancyGuard {
         collateralBalances[_eventAddress] = 0;
         isCollateralLocked[_eventAddress] = false;
 
-        // Store the forfeited collateral amount
-        forfeitedCollateralAmounts[_eventAddress] = amount;
+        // Calculate distributions
+        uint256 toDisputingUsers = (amount * 80) / 100;
+        uint256 toProtocol = (amount * 10) / 100;
+        uint256 toBurn = amount - toDisputingUsers - toProtocol; // Remaining amount
+
+        // Store the forfeited collateral amount for disputing users
+        forfeitedCollateralAmounts[_eventAddress] = toDisputingUsers;
+
+        // Transfer protocol fee
+        protocolToken.transfer(protocolFeeRecipient, toProtocol);
+
+        // Burn tokens by sending to zero address
+        protocolToken.burn(toBurn);
 
         // Close the event
         closeEvent(_eventAddress);
@@ -327,7 +341,7 @@ contract EventManager is ReentrancyGuard {
         isCollateralLocked[_eventAddress] = false;
 
         // Transfer collateral back to the creator
-        protocolToken.safeTransfer(eventContract.creator(), amount);
+        protocolToken.transfer(eventContract.creator(), amount);
 
         if (eventContract.status() == Event.EventStatus.Resolved) {
             closeEvent(_eventAddress);
@@ -433,7 +447,7 @@ contract EventManager is ReentrancyGuard {
         forfeitedCollateralClaims[_eventAddress][msg.sender] = true;
 
         // Transfer the user's share
-        protocolToken.safeTransfer(msg.sender, amount);
+        protocolToken.transfer(msg.sender, amount);
 
         emit ForfeitedCollateralClaimed(_eventAddress, msg.sender, amount);
     }
@@ -451,7 +465,7 @@ contract EventManager is ReentrancyGuard {
         forfeitedCollateralAmounts[_eventAddress] = 0;
 
         // Transfer unclaimed collateral to the protocol fee recipient
-        protocolToken.safeTransfer(protocolFeeRecipient, unclaimedAmount);
+        protocolToken.transfer(protocolFeeRecipient, unclaimedAmount);
     }
 
     /**
