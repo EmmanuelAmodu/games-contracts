@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import {PepperBaseTokenV1} from "./interfaces/PepperBaseTokenV1.sol";
+import {IPepperBaseTokenV1} from "./interfaces/IPepperBaseTokenV1.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./EventManager.sol";
+import {EventManager} from "./EventManager.sol";
 
 contract Event is ReentrancyGuard {
     string public constant VERSION = "0.1.0"; // Updated version
@@ -48,7 +48,7 @@ contract Event is ReentrancyGuard {
     uint256 public winningOutcome;
     uint256 public protocolFeePercentage = 10; // 10%
 
-    PepperBaseTokenV1 public protocolToken;
+    IPepperBaseTokenV1 public protocolToken;
 
     // Dispute variables
     DisputeStatus public disputeStatus;
@@ -139,7 +139,7 @@ contract Event is ReentrancyGuard {
         status = EventStatus.Open;
         createTime = block.timestamp;
 
-        protocolToken = PepperBaseTokenV1(_protocolToken);
+        protocolToken = IPepperBaseTokenV1(_protocolToken);
 
         // Calculate betting limit
         bettingLimit = EventManager(eventManager).computeBetLimit(creator, collateralAmount);
@@ -363,7 +363,7 @@ contract Event is ReentrancyGuard {
     /**
      * @notice Allows users who bet on the winning outcome to claim their payouts.
      */
-    function claimPayout() external nonReentrant {
+    function claimPayout() external nonReentrant returns (uint256 userPayout) {
         require(block.timestamp > disputeDeadline, "Dispute period not over");
         require(status == EventStatus.Resolved || status == EventStatus.Closed, "Event not resolved or closed");
         require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
@@ -384,7 +384,7 @@ contract Event is ReentrancyGuard {
         uint256 fee = (loot * protocolFeePercentage) / 100;
         uint256 netLoot = loot - fee;
 
-        uint256 userPayout = userStake + ((userStake * netLoot * 1e18) / winningStake) / 1e18;
+        userPayout = userStake + ((userStake * netLoot * 1e18) / winningStake) / 1e18;
 
         // Handle last claimant edge case
         uint256 contractBalance = protocolToken.balanceOf(address(this));

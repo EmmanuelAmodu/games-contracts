@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import {PepperBaseTokenV1} from "./interfaces/PepperBaseTokenV1.sol";
+import {IPepperBaseTokenV1} from "./interfaces/IPepperBaseTokenV1.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Event} from "./Event.sol";
-import "./Governance.sol";
+import {Governance} from "./Governance.sol";
 
 contract EventManager is ReentrancyGuard {
     string public constant VERSION = "0.1.1";
@@ -12,7 +12,7 @@ contract EventManager is ReentrancyGuard {
     uint256 public bettingMultiplier = 100;
     address[] public allEvents;
 
-    PepperBaseTokenV1 public protocolToken;
+    IPepperBaseTokenV1 public protocolToken;
 
     // Mapping from event address to collateral amount
     mapping(address => uint256) public collateralBalances; // Key: eventAddress
@@ -65,7 +65,7 @@ contract EventManager is ReentrancyGuard {
         require(_protocolFeeRecipient != address(0), "Invalid fee recipient address");
 
         protocolFeeRecipient = _protocolFeeRecipient;
-        protocolToken = PepperBaseTokenV1(_protocolToken);
+        protocolToken = IPepperBaseTokenV1(_protocolToken);
         governance = Governance(_governance);
     }
 
@@ -138,7 +138,21 @@ contract EventManager is ReentrancyGuard {
             }
         }
 
-        return openEvents;
+        // sort by creator reputation descending
+        address[] memory sortedEvents = new address[](openEventCount);
+        for (uint256 i = 0; i < openEvents.length; i++) {
+            sortedEvents[i] = openEvents[i];
+            for (uint256 j = i + 1; j < openEvents.length; j++) {
+                if (creatorsTrustMultiplier[Event(openEvents[j]).creator()] >
+                    creatorsTrustMultiplier[Event(sortedEvents[i]).creator()]) {
+                    address temp = sortedEvents[i];
+                    sortedEvents[i] = openEvents[j];
+                    sortedEvents[j] = temp;
+                }
+            }
+        }
+
+        return sortedEvents;
     }
 
     /**
