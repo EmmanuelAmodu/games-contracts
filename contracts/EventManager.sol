@@ -7,28 +7,16 @@ import {Event} from "./Event.sol";
 import {Governance} from "./Governance.sol";
 
 contract EventManager is ReentrancyGuard {
-    string public constant VERSION = "0.2.0"; // Updated version
+    string public constant VERSION = "0.1.1";
     address public protocolFeeRecipient;
     address[] public allEvents;
-    uint256 public totalLpRewards;
 
     IPepperBaseTokenV1 public protocolToken;
 
-    // Liquidity providers mapping and total liquidity
-    mapping(address => uint256) public lpBalances; // LP address => balance
-    uint256 public totalLiquidity;
-
-    // LP reward per share tracking
-    uint256 public accRewardPerShare;
-    uint256 public lastRewardBalance;
-    mapping(address => uint256) public lpRewardDebt;
-
     // Mapping from event address to collateral amount
     mapping(address => uint256) public collateralBalances; // Key: eventAddress
-    mapping(address => bool) public isCollateralLocked;    // Key: eventAddress
-
-    // Mapping to store the reputation for each creator
-    mapping(address => int256) public creatorsReputation;
+    mapping(address => bool) public isCollateralLocked; // Key: eventAddress
+    mapping(address => int256) public creatorsReputation; // Key: creator
 
     // Governance contract
     Governance public governance;
@@ -54,9 +42,6 @@ contract EventManager is ReentrancyGuard {
     event CollateralClaimed(address indexed eventAddress, address indexed creator, uint256 amount);
     event DisputeResolved(address indexed eventAddress, uint256 finalOutcome);
     event ForfeitedCollateralClaimed(address indexed eventAddress, address indexed user, uint256 amount);
-    event LiquidityDeposited(address indexed lp, uint256 amount);
-    event LiquidityWithdrawn(address indexed lp, uint256 amount);
-    event LPRewardClaimed(address indexed lp, uint256 amount);
 
     modifier onlyOwner() {
         require(msg.sender == governance.owner(), "Only owner can call");
@@ -84,84 +69,6 @@ contract EventManager is ReentrancyGuard {
     }
 
     /**
-     * @notice Allows users to deposit liquidity into the pool.
-     */
-    function depositLiquidity(uint256 amount) external nonReentrant {
-        require(amount > 0, "Amount must be greater than zero");
-
-        // Update LP's pending rewards
-        _updateLpRewards(msg.sender);
-
-        protocolToken.transferFrom(msg.sender, address(this), amount);
-        lpBalances[msg.sender] += amount;
-        totalLiquidity += amount;
-
-        emit LiquidityDeposited(msg.sender, amount);
-    }
-
-    /**
-     * @notice Allows users to withdraw their liquidity from the pool along with any pending rewards.
-     */
-    function withdrawLiquidity(uint256 amount) external nonReentrant {
-        require(lpBalances[msg.sender] >= amount, "Insufficient balance");
-
-        // Update LP's pending rewards
-        _updateLpRewards(msg.sender);
-
-        lpBalances[msg.sender] -= amount;
-        totalLiquidity -= amount;
-
-        protocolToken.transfer(msg.sender, amount);
-
-        emit LiquidityWithdrawn(msg.sender, amount);
-    }
-
-    /**
-     * @notice Allows LPs to claim their pending rewards.
-     */
-    function claimLpRewards() external nonReentrant {
-        _updateLpRewards(msg.sender);
-
-        uint256 rewards = (lpBalances[msg.sender] * accRewardPerShare) / 1e18 - lpRewardDebt[msg.sender];
-        require(rewards > 0, "No rewards to claim");
-
-        lpRewardDebt[msg.sender] = (lpBalances[msg.sender] * accRewardPerShare) / 1e18;
-
-        protocolToken.transfer(msg.sender, rewards);
-
-        emit LPRewardClaimed(msg.sender, rewards);
-    }
-
-    /**
-     * @notice Internal function to update an LP's reward debt.
-     */
-    function _updateLpRewards(address lp) internal {
-        uint256 totalRewardBalance = protocolToken.balanceOf(address(this)) - totalLiquidity - _totalCollateral();
-
-        if (totalLiquidity > 0) {
-            uint256 rewards = totalRewardBalance - lastRewardBalance;
-
-            if (rewards > 0) {
-                accRewardPerShare += (rewards * 1e18) / totalLiquidity;
-                lastRewardBalance = totalRewardBalance;
-            }
-        }
-
-        if (lp != address(0)) {
-            lpRewardDebt[lp] = (lpBalances[lp] * accRewardPerShare) / 1e18;
-        }
-    }
-
-    /**
-     * @notice Calculates the total collateral locked in the contract.
-     */
-    function _totalCollateral() internal view returns (uint256 totalCollateral) {
-        for (uint256 i = 0; i < allEvents.length; i++) {
-            totalCollateral += collateralBalances[allEvents[i]];
-        }
-    }
-
-    /**
      * @notice Creates a new event.
      */
     function createEvent(
@@ -180,7 +87,11 @@ contract EventManager is ReentrancyGuard {
         require(_outcomes.length >= 2 && _outcomes.length <= 10, "Invalid number of outcomes");
         require(bytes(_title).length > 0, "Title cannot be empty");
         require(bytes(_description).length > 0, "Description cannot be empty");
-        require(creatorsReputation[msg.sender] > -30, "Creator reputation must be greater than -30");
+        require(bytes(_category).length > 0, "Category cannot be empty");
+        require(creatorsReputation[msg.sender] > -30, "Creator can not create events due to low reputation");
+
+        // Initialize creator's trust multiplier if not set
+        initializeCreatorsReputation(msg.sender);
 
         // Deploy a new Event contract
         eventId = allEvents.length;
@@ -203,238 +114,10 @@ contract EventManager is ReentrancyGuard {
         // Transfer collateral from the creator to the EventManager for this event
         lockCollateral(eventAddress, msg.sender, _collateralAmount);
 
-        // Initialize creator's Reputation if not set
-        initializeCreatorReputation(msg.sender);
-
         allEvents.push(eventAddress);
         creatorEvents[msg.sender].push(eventAddress);
 
         emit EventCreated(eventAddress, msg.sender, eventId);
-    }
-
-    /**
-     * @notice Locks collateral for a specific event.
-     */
-    function lockCollateral(address _eventAddress, address _creator, uint256 _amount) internal {
-        require(protocolToken.balanceOf(_creator) >= _amount, "Insufficient balance for collateral");
-        require(
-            protocolToken.allowance(_creator, address(this)) >= _amount,
-            "Insufficient allowance for collateral"
-        );
-        require(!isCollateralLocked[_eventAddress], "Collateral already locked for this event");
-
-        // Transfer collateral tokens from the creator to this contract
-        protocolToken.transferFrom(_creator, address(this), _amount);
-
-        collateralBalances[_eventAddress] += _amount;
-        isCollateralLocked[_eventAddress] = true;
-
-        emit CollateralLocked(_eventAddress, _amount);
-    }
-
-    /**
-     * @notice Allows the event creator to claim the locked collateral after the event is resolved.
-     */
-    function claimCollateral(address _eventAddress) external onlyEventCreator(_eventAddress) nonReentrant {
-        Event _event = Event(_eventAddress);
-        require(block.timestamp > _event.disputeDeadline(), "Dispute period not over");
-
-        // Ensure the event is resolved or canceled
-        require(
-            _event.status() == Event.EventStatus.Resolved || _event.status() == Event.EventStatus.Cancelled,
-            "Event is not resolved or canceled"
-        );
-
-        if (_event.status() == Event.EventStatus.Resolved) {
-            require(_event.disputeStatus() != Event.DisputeStatus.Disputed, "Event is disputed");
-            // Transfer fee to LPs, platform, and creator
-            bool winningOutcomeChanged = disputeOutcomeChanged[_eventAddress];
-            _event.payFees(winningOutcomeChanged);
-        }
-
-        // Release collateral to the creator
-        releaseCollateral(_eventAddress);
-
-        // Update creator's reputation
-        increaseCreatorsReputation(msg.sender, 1);
-
-        emit CollateralClaimed(_eventAddress, msg.sender, collateralBalances[_eventAddress]);
-    }
-
-    /**
-     * @notice Releases collateral back to the event creator.
-     */
-    function releaseCollateral(address _eventAddress) internal {
-        Event eventContract = Event(_eventAddress);
-        uint256 amount = collateralBalances[_eventAddress];
-
-        require(
-            eventContract.disputeStatus() != Event.DisputeStatus.Disputed,
-            "Cannot release collateral during dispute"
-        );
-        require(isCollateralLocked[_eventAddress], "No collateral to release for this event");
-        require(amount > 0, "No collateral balance for this event");
-
-        // Update state before external calls
-        collateralBalances[_eventAddress] = 0;
-        isCollateralLocked[_eventAddress] = false;
-
-        // Transfer collateral back to the creator
-        protocolToken.transfer(eventContract.creator(), amount);
-
-        if (eventContract.status() == Event.EventStatus.Resolved) {
-            closeEvent(_eventAddress);
-        }
-
-        emit CollateralReleased(_eventAddress, amount);
-    }
-
-    /**
-     * @notice Closes an event.
-     * @param _eventAddress The address of the event contract.
-     */
-    function closeEvent(address _eventAddress) internal {
-        Event eventContract = Event(_eventAddress);
-
-        // Ensure the event is resolved
-        require(
-            eventContract.status() == Event.EventStatus.Resolved,
-            "Event is not resolved"
-        );
-
-        if (eventContract.status() == Event.EventStatus.Resolved) {
-            eventContract.closeEvent();
-        }
-
-        emit EventClosed(_eventAddress);
-    }
-
-    /**
-     * @notice Pays the fees to LPs, the platform, and the event creator.
-     * @param feeAmount The total fee amount.
-     * @param creator The event creator's address.
-     * @param winningOutcomeChanged Indicates if the winning outcome was changed due to a dispute.
-     */
-    function distributeFees(uint256 feeAmount, address creator, bool winningOutcomeChanged) external nonReentrant {
-        require(msg.sender == tx.origin || msg.sender == address(this), "Invalid caller");
-
-        uint256 lpFee = (feeAmount * 5) / 10; // 5%
-        uint256 platformFee = (feeAmount * 1) / 10; // 1%
-        uint256 creatorFee = feeAmount - lpFee - platformFee; // Remaining 4%
-
-        // Update LP rewards
-        _updateLpRewards(address(0)); // Update global rewards
-
-        // Transfer platform fee
-        protocolToken.transfer(protocolFeeRecipient, platformFee);
-
-        // Transfer creator fee
-        if (!winningOutcomeChanged) {
-            protocolToken.transfer(creator, creatorFee);
-        } else {
-            // If the winning outcome was changed, the creator doesn't get the fee
-            protocolToken.transfer(protocolFeeRecipient, creatorFee);
-        }
-
-        // The LP fee remains in the contract and will be accounted in rewards
-        lastRewardBalance += lpFee;
-    }
-
-    /**
-     * @notice Forfeits the event's collateral in case of a valid dispute.
-     */
-    function forfeitCollateral(address _eventAddress) internal {
-        require(isCollateralLocked[_eventAddress], "No collateral to forfeit for this event");
-        uint256 amount = collateralBalances[_eventAddress];
-        require(amount > 0, "No collateral balance for this event");
-
-        // Update state before external calls
-        collateralBalances[_eventAddress] = 0;
-        isCollateralLocked[_eventAddress] = false;
-
-        // Calculate distributions
-        uint256 toDisputingUsers = (amount * 80) / 100;
-        uint256 toProtocol = (amount * 10) / 100;
-        uint256 toBurn = amount - toDisputingUsers - toProtocol; // Remaining amount
-
-        // Store the forfeited collateral amount for disputing users
-        forfeitedCollateralAmounts[_eventAddress] = toDisputingUsers;
-
-        // Transfer protocol fee
-        protocolToken.transfer(protocolFeeRecipient, toProtocol);
-
-        // Burn tokens
-        protocolToken.burn(toBurn);
-
-        // Close the event
-        closeEvent(_eventAddress);
-
-        emit CollateralForfeited(_eventAddress, amount);
-    }
-
-    /**
-     * @notice Allows users to claim their share of forfeited collateral.
-     * @param _eventAddress The address of the event.
-     */
-    function claimForfeitedCollateral(address _eventAddress) external nonReentrant {
-        Event eventContract = Event(_eventAddress);
-        require(eventContract.disputeStatus() == Event.DisputeStatus.Resolved, "Dispute not resolved");
-        require(forfeitedCollateralAmounts[_eventAddress] > 0, "No collateral forfeited");
-
-        uint256 userContribution = eventContract.disputingUsers(msg.sender);
-        require(userContribution > 0, "No contribution to dispute");
-        require(!forfeitedCollateralClaims[_eventAddress][msg.sender], "Already claimed");
-
-        uint256 totalContributions = eventContract.totalDisputeContributions();
-        require(totalContributions > 0, "Total dispute contributions must be greater than zero");
-
-        uint256 amount = (forfeitedCollateralAmounts[_eventAddress] * userContribution) / totalContributions;
-        require(amount > 0, "No collateral to claim");
-
-        // Mark as claimed before transferring
-        forfeitedCollateralClaims[_eventAddress][msg.sender] = true;
-
-        // Transfer the user's share
-        protocolToken.transfer(msg.sender, amount);
-
-        emit ForfeitedCollateralClaimed(_eventAddress, msg.sender, amount);
-    }
-
-    /**
-     * @notice Allows governance to resolve a dispute.
-     */
-    function resolveDispute(address _eventAddress, uint256 _finalOutcome) external onlyApprovedAdmin nonReentrant {
-        Event _event = Event(_eventAddress);
-        require(_event.disputeStatus() == Event.DisputeStatus.Disputed, "Event is not disputed");
-
-        uint256 initialOutcome = _event.winningOutcome();
-
-        // Update the dispute status in the Event contract before proceeding
-        _event.resolveDispute(_finalOutcome);
-
-        bool winningOutcomeChanged = _finalOutcome != initialOutcome;
-        disputeOutcomeChanged[_eventAddress] = winningOutcomeChanged;
-
-        // Now you can safely release or forfeit collateral
-        if (winningOutcomeChanged) {
-            // Forfeit collateral
-            forfeitCollateral(_eventAddress);
-
-            // Decrease creators reputation by 20% or 10 points which ever is high
-            int256 decreaseByAmount = creatorsReputation[_event.creator()] / 5;
-            if (decreaseByAmount < 10) {
-                decreaseByAmount = 10;
-            }
-
-            decreaseCreatorsReputation(_event.creator(), uint256(decreaseByAmount));
-
-            emit DisputeResolved(_eventAddress, _finalOutcome);
-        } else {
-            // Transfer dispute contributions accordingly
-            _event.collectDisputeContributionsForCreator();
-
-            emit DisputeResolved(_eventAddress, _finalOutcome);
-        }
     }
 
     /**
@@ -476,6 +159,228 @@ contract EventManager is ReentrancyGuard {
     }
 
     /**
+     * @notice Returns all events created by a specific creator.
+     */
+    function getAllCreatorEvents(address creator) external view returns (address[] memory) {
+        return creatorEvents[creator];
+    }
+
+    /**
+     * @notice Returns the address of an event by its ID.
+     */
+    function getEvent(uint256 eventId) external view returns (address eventAddress) {
+        require(eventId < allEvents.length, "Invalid event ID");
+        return allEvents[eventId];
+    }
+
+    /**
+     * @notice Closes an event.
+     * @param _eventAddress The address of the event contract.
+     */
+    function closeEvent(address _eventAddress) internal {
+        Event eventContract = Event(_eventAddress);
+
+        // Ensure the event is resolved
+        require(
+            eventContract.status() == Event.EventStatus.Resolved,
+            "Event is not resolved"
+        );
+
+        if (eventContract.status() == Event.EventStatus.Resolved) {
+            eventContract.closeEvent();
+        }
+
+        emit EventClosed(_eventAddress);
+    }
+
+    /**
+     * @notice Locks collateral for a specific event.
+     */
+    function lockCollateral(address _eventAddress, address _creator, uint256 _amount) internal {
+        require(protocolToken.balanceOf(_creator) >= _amount, "Insufficient balance for collateral");
+        require(
+            protocolToken.allowance(_creator, address(this)) >= _amount,
+            "Insufficient allowance for collateral"
+        );
+        require(!isCollateralLocked[_eventAddress], "Collateral already locked for this event");
+
+        // Transfer collateral tokens from the creator to this contract
+        protocolToken.transferFrom(_creator, address(this), _amount);
+
+        collateralBalances[_eventAddress] += _amount;
+        isCollateralLocked[_eventAddress] = true;
+
+        emit CollateralLocked(_eventAddress, _amount);
+    }
+
+    /**
+     * @notice Increases the locked collateral for a specific event.
+     */
+    function increaseCollateral(address _eventAddress, uint256 _amount) public onlyEventCreator(_eventAddress) nonReentrant {
+        require(isCollateralLocked[_eventAddress], "No collateral locked for this event");
+        require(_amount > 0, "Amount must be greater than zero");
+        require(_amount <= 1e24, "Amount exceeds maximum limit"); // Example maximum
+
+        // Transfer additional collateral tokens from the creator to this contract
+        protocolToken.transferFrom(msg.sender, address(this), _amount);
+        collateralBalances[_eventAddress] += _amount;
+
+        emit CollateralIncreased(_eventAddress, _amount);
+    }
+
+    /**
+     * @notice Allows the event creator to claim the locked collateral after the event is resolved.
+     */
+    function claimCollateral(address _eventAddress) external onlyEventCreator(_eventAddress) nonReentrant {
+        Event _event = Event(_eventAddress);
+        require(block.timestamp > _event.disputeDeadline(), "Dispute period not over");
+
+        // Ensure the event is resolved or canceled
+        require(
+            _event.status() == Event.EventStatus.Resolved || _event.status() == Event.EventStatus.Cancelled,
+            "Event is not resolved or canceled"
+        );
+
+        if (_event.status() == Event.EventStatus.Resolved) {
+            require(_event.disputeStatus() != Event.DisputeStatus.Disputed, "Event is disputed");
+            // Transfer fee to governance and creator
+            bool winningOutcomeChanged = disputeOutcomeChanged[_eventAddress];
+            _event.payFees(protocolFeeRecipient, winningOutcomeChanged);
+        }
+
+        // If no one bet on winning outcome, refund bets instead of burning loot
+        if (_event.status() == Event.EventStatus.Resolved && _event.outcomeStakes(_event.winningOutcome()) == 0) {
+            _event.refundAllBets();
+        }
+
+        // Release collateral to the creator
+        releaseCollateral(_eventAddress);
+
+        emit CollateralClaimed(_eventAddress, msg.sender, collateralBalances[_eventAddress]);
+    }
+
+    /**
+     * @notice Allows the event creator to cancel an open event.
+     */
+    function cancelEvent(address _eventAddress) external onlyEventCreator(_eventAddress) nonReentrant {
+        Event _event = Event(_eventAddress);
+        require(_event.status() == Event.EventStatus.Open, "Can only cancel open events");
+        require(block.timestamp < _event.startTime() - 1 hours, "Cannot cancel event within 1 hour of start time");
+
+        _event.cancelEvent();
+
+        // Release collateral back to the creator
+        releaseCollateral(_eventAddress);
+    }
+
+    /**
+     * @notice Allows governance to resolve a dispute.
+     */
+    function resolveDispute(address _eventAddress, uint256 _finalOutcome) external onlyApprovedAdmin nonReentrant {
+        Event _event = Event(_eventAddress);
+        require(_event.disputeStatus() == Event.DisputeStatus.Disputed, "Event is not disputed");
+
+        uint256 initialOutcome = _event.winningOutcome();
+
+        // Update the dispute status in the Event contract before proceeding
+        _event.resolveDispute(_finalOutcome);
+
+        bool winningOutcomeChanged = _finalOutcome != initialOutcome;
+        disputeOutcomeChanged[_eventAddress] = winningOutcomeChanged;
+
+        // Now you can safely release or forfeit collateral
+        if (winningOutcomeChanged) {
+            // reduce reputation by 50% or by 10, whichever is greater
+            int256 reputation = creatorsReputation[_event.creator()];
+            int256 decreaseAmount = reputation / 2;
+            if (decreaseAmount < 10) {
+                decreaseAmount = 10;
+            }
+
+            creatorsReputation[_event.creator()] = reputation - decreaseAmount;
+
+            // Forfeit collateral
+            forfeitCollateral(_eventAddress);
+
+            emit DisputeResolved(_eventAddress, _finalOutcome);
+        } else {
+            // Transfer dispute contributions accordingly
+            _event.collectDisputeContributionsForCreator();
+
+            emit DisputeResolved(_eventAddress, _finalOutcome);
+        }
+    }
+
+    /**
+     * @notice Forfeits the event's collateral in case of a valid dispute.
+     */
+    function forfeitCollateral(address _eventAddress) internal {
+        require(isCollateralLocked[_eventAddress], "No collateral to forfeit for this event");
+        uint256 amount = collateralBalances[_eventAddress];
+        require(amount > 0, "No collateral balance for this event");
+
+        // Update state before external calls
+        collateralBalances[_eventAddress] = 0;
+        isCollateralLocked[_eventAddress] = false;
+
+        // Calculate distributions
+        uint256 toDisputingUsers = (amount * 80) / 100;
+        uint256 toProtocol = (amount * 10) / 100;
+        uint256 toBurn = amount - toDisputingUsers - toProtocol; // Remaining amount
+
+        // Store the forfeited collateral amount for disputing users
+        forfeitedCollateralAmounts[_eventAddress] = toDisputingUsers;
+
+        // Transfer protocol fee
+        protocolToken.transfer(protocolFeeRecipient, toProtocol);
+
+        // Burn tokens by sending to zero address
+        protocolToken.burn(toBurn);
+
+        // Close the event
+        closeEvent(_eventAddress);
+
+        emit CollateralForfeited(_eventAddress, amount);
+    }
+
+    /**
+     * @notice Releases collateral back to the event creator.
+     */
+    function releaseCollateral(address _eventAddress) internal {
+        Event eventContract = Event(_eventAddress);
+        uint256 amount = collateralBalances[_eventAddress];
+
+        require(
+            eventContract.disputeStatus() != Event.DisputeStatus.Disputed,
+            "Cannot release collateral during dispute"
+        );
+        require(isCollateralLocked[_eventAddress], "No collateral to release for this event");
+        require(amount > 0, "No collateral balance for this event");
+
+        // Update state before external calls
+        collateralBalances[_eventAddress] = 0;
+        isCollateralLocked[_eventAddress] = false;
+
+        // Transfer collateral back to the creator
+        protocolToken.transfer(eventContract.creator(), amount);
+
+        if (eventContract.status() == Event.EventStatus.Resolved) {
+            closeEvent(_eventAddress);
+        }
+
+        emit CollateralReleased(_eventAddress, amount);
+    }
+
+    /**
+     * @notice Initializes the trust multiplier for a creator.
+     */
+    function initializeCreatorsReputation(address creator) internal {
+        if (creatorsReputation[creator] == int256(0)) {
+            creatorsReputation[creator] = 1;
+        }
+    }
+
+    /**
      * @notice Allows governance to update the protocol fee recipient.
      */
     function setProtocolFeeRecipient(address _newRecipient) external onlyOwner {
@@ -493,21 +398,12 @@ contract EventManager is ReentrancyGuard {
     }
 
     /**
-     * @notice Initializes the trust multiplier for a creator.
-     */
-    function initializeCreatorReputation(address creator) internal {
-        if (creatorsReputation[creator] == int256(0)) {
-            creatorsReputation[creator] = 1;
-        }
-    }
-
-    /**
      * @notice Increases the creator's trust multiplier.
      * @param creator The address of the creator.
      * @param amount The amount to increase the multiplier by.
      */
     function increaseCreatorsReputation(address creator, uint256 amount) public onlyOwner {
-        initializeCreatorReputation(creator);
+        initializeCreatorsReputation(creator);
         int256 reputation = creatorsReputation[creator] + int256(amount);
         creatorsReputation[creator] = reputation;
     }
@@ -518,9 +414,63 @@ contract EventManager is ReentrancyGuard {
      * @param amount The amount to decrease the multiplier by.
      */
     function decreaseCreatorsReputation(address creator, uint256 amount) public onlyOwner {
-        initializeCreatorReputation(creator);
+        initializeCreatorsReputation(creator);
         int256 reputation = creatorsReputation[creator] - int256(amount);
         require(reputation > type(int256).min, "Underflow error");
         creatorsReputation[creator] = reputation;
+    }
+
+    /**
+     * @notice Allows users to claim their share of forfeited collateral.
+     * @param _eventAddress The address of the event.
+     */
+    function claimForfeitedCollateral(address _eventAddress) external nonReentrant {
+        Event eventContract = Event(_eventAddress);
+        require(eventContract.disputeStatus() == Event.DisputeStatus.Resolved, "Dispute not resolved");
+        require(forfeitedCollateralAmounts[_eventAddress] > 0, "No collateral forfeited");
+
+        uint256 userContribution = eventContract.disputingUsers(msg.sender);
+        require(userContribution > 0, "No contribution to dispute");
+        require(!forfeitedCollateralClaims[_eventAddress][msg.sender], "Already claimed");
+
+        uint256 totalContributions = eventContract.totalDisputeContributions();
+        require(totalContributions > 0, "Total dispute contributions must be greater than zero");
+
+        uint256 amount = (forfeitedCollateralAmounts[_eventAddress] * userContribution) / totalContributions;
+        require(amount > 0, "No collateral to claim");
+
+        // Mark as claimed before transferring
+        forfeitedCollateralClaims[_eventAddress][msg.sender] = true;
+
+        // Transfer the user's share
+        protocolToken.transfer(msg.sender, amount);
+
+        emit ForfeitedCollateralClaimed(_eventAddress, msg.sender, amount);
+    }
+
+    /**
+     * @notice Allows the protocol to collect unclaimed forfeited collateral after a certain period.
+     * @param _eventAddress The address of the event.
+     */
+    function collectUnclaimedCollateral(address _eventAddress) external onlyOwner nonReentrant {
+        Event eventContract = Event(_eventAddress);
+        require(block.timestamp > eventContract.disputeDeadline() + 30 days, "Collection period not reached");
+        require(forfeitedCollateralAmounts[_eventAddress] > 0, "No collateral to collect");
+
+        uint256 unclaimedAmount = forfeitedCollateralAmounts[_eventAddress];
+        forfeitedCollateralAmounts[_eventAddress] = 0;
+
+        // Transfer unclaimed collateral to the protocol fee recipient
+        protocolToken.transfer(protocolFeeRecipient, unclaimedAmount);
+    }
+
+    /**
+     * @notice Notifies the EventManager of dispute resolution outcome.
+     * @param _eventAddress The address of the event.
+     * @param outcomeChanged Indicates if the winning outcome changed due to the dispute.
+     */
+    function notifyDisputeResolution(address _eventAddress, bool outcomeChanged) external {
+        require(msg.sender == _eventAddress, "Only event contract can notify");
+        disputeOutcomeChanged[_eventAddress] = outcomeChanged;
     }
 }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.17;
 
 import {IPepperBaseTokenV1} from "./interfaces/IPepperBaseTokenV1.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {EventManager} from "./EventManager.sol";
 
 contract Event is ReentrancyGuard {
-    string public constant VERSION = "0.2.0"; // Updated version
+    string public constant VERSION = "0.1.0"; // Updated version
 
     enum EventStatus {
         Open,
@@ -45,6 +45,7 @@ contract Event is ReentrancyGuard {
     uint256 public totalStakers;
 
     uint256 public winningOutcome;
+    uint256 public protocolFeePercentage = 10; // 10%
 
     IPepperBaseTokenV1 public protocolToken;
 
@@ -141,26 +142,6 @@ contract Event is ReentrancyGuard {
     }
 
     /**
-     * @notice Updates the thumbnail URL of the event. Can only be called by the creator before the event starts.
-     * @param _thumbnailUrl The new thumbnail URL.
-     */
-    function updateThumbnailUrl(string memory _thumbnailUrl) external onlyCreator {
-        require(block.timestamp < startTime, "Cannot update after event start");
-        thumbnailUrl = _thumbnailUrl;
-        emit ThumbnailUrlUpdated(_thumbnailUrl);
-    }
-
-    /**
-     * @notice Updates the streaming URL of the event. Can only be called by the creator before the event starts.
-     * @param _streamingUrl The new streaming URL.
-     */
-    function updateStreamingUrl(string memory _streamingUrl) external onlyCreator {
-        require(block.timestamp < startTime, "Cannot update after event start");
-        streamingUrl = _streamingUrl;
-        emit StreamingUrlUpdated(_streamingUrl);
-    }
-
-    /**
      * @notice Allows users to place bets on the event.
      * @param _outcomeIndex Outcome to bet on
      * @param _amount Amount to bet
@@ -186,6 +167,36 @@ contract Event is ReentrancyGuard {
     }
 
     /**
+     * @notice Closes the event for betting. Can only be called by the EventManager.
+     */
+    function closeEvent() external onlyEventManager inStatus(EventStatus.Resolved) {
+        require(block.timestamp > endTime, "Event has not ended yet");
+
+        status = EventStatus.Closed;
+        emit EventClosed(eventId);
+    }
+
+    /**
+     * @notice Updates the thumbnail URL of the event. Can only be called by the creator before the event starts.
+     * @param _thumbnailUrl The new thumbnail URL.
+     */
+    function updateThumbnailUrl(string memory _thumbnailUrl) external onlyCreator {
+        require(block.timestamp < startTime, "Cannot update after event start");
+        thumbnailUrl = _thumbnailUrl;
+        emit ThumbnailUrlUpdated(_thumbnailUrl);
+    }
+
+    /**
+     * @notice Updates the streaming URL of the event. Can only be called by the creator before the event starts.
+     * @param _streamingUrl The new streaming URL.
+     */
+    function updateStreamingUrl(string memory _streamingUrl) external onlyCreator {
+        require(block.timestamp < startTime, "Cannot update after event start");
+        streamingUrl = _streamingUrl;
+        emit StreamingUrlUpdated(_streamingUrl);
+    }
+
+    /**
      * @notice Submits the outcome of the event. Collateral is not released immediately.
      * @param _winningOutcome The index of the winning outcome.
      */
@@ -208,121 +219,11 @@ contract Event is ReentrancyGuard {
     }
 
     /**
-     * @notice Allows users who bet on the winning outcome to claim their payouts.
-     */
-    function claimPayout() external nonReentrant returns (uint256 userPayout) {
-        require(block.timestamp > disputeDeadline, "Dispute period not over");
-        require(
-            status == EventStatus.Resolved || status == EventStatus.Closed,
-            "Event not resolved or closed"
-        );
-        require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
-        require(!hasClaimed[msg.sender], "Payout already claimed");
-        require(msg.sender != address(0), "Invalid user address");
-
-        uint256 userStake = userBets[msg.sender][winningOutcome];
-        require(userStake > 0, "No winning bet to claim");
-
-        uint256 winningStake = outcomeStakes[winningOutcome];
-        require(winningStake > 0, "No stakes on winning outcome");
-
-        // Mark as claimed before external calls to prevent reentrancy
-        hasClaimed[msg.sender] = true;
-
-        // Calculate loot and fees
-        uint256 loot = totalStaked - winningStake;
-        uint256 totalFee = (loot * 10) / 100; // 10% total fee
-        uint256 feeDeductedLoot = loot - totalFee;
-
-        // Calculate user's payout
-        userPayout = userStake + ((userStake * feeDeductedLoot) / winningStake);
-
-        // Update total payouts
-        totalPayouts += userPayout;
-
-        // Transfer payout to user
-        protocolToken.transfer(msg.sender, userPayout);
-
-        emit PayoutClaimed(msg.sender, userPayout);
-    }
-
-    /**
-     * @notice Pays the fees to LPs, the platform, and the event creator.
-     * @param winningOutcomeChanged Indicates if the winning outcome was changed due to a dispute.
-     */
-    function payFees(bool winningOutcomeChanged) external onlyEventManager inStatus(EventStatus.Resolved) {
-        uint256 winningStake = outcomeStakes[winningOutcome];
-        uint256 loot = totalStaked - winningStake;
-        uint256 totalFee = (loot * 10) / 100; // 10% total fee
-
-        // Transfer the total fee to EventManager for distribution
-        protocolToken.transfer(eventManager, totalFee);
-
-        // Call distributeFees on EventManager
-        EventManager(eventManager).distributeFees(totalFee, creator, winningOutcomeChanged);
-    }
-
-    /**
-     * @notice Closes the event for betting. Can only be called by the EventManager.
-     */
-    function closeEvent() external onlyEventManager inStatus(EventStatus.Resolved) {
-        require(block.timestamp > endTime, "Event has not ended yet");
-
-        status = EventStatus.Closed;
-        emit EventClosed(eventId);
-    }
-
-    /**
-     * @notice Allows users to withdraw their bets if the event is cancelled or refunded.
-     * @param _outcomeIndex The index of the outcome to withdraw the bet from.
-     */
-    function withdrawBet(uint256 _outcomeIndex) external nonReentrant {
-        require(_outcomeIndex < outcomes.length, "Invalid outcome index");
-        require(msg.sender != address(0), "Invalid user address");
-        uint256 userStake = userBets[msg.sender][_outcomeIndex];
-        require(userStake > 0, "No bet to withdraw");
-
-        require(
-            status == EventStatus.Cancelled ||
-            (status == EventStatus.Resolved && outcomeStakes[winningOutcome] == 0),
-            "Withdrawals not allowed"
-        );
-
-        // Ensure no underflow in userTotalBets
-        require(userTotalBets[msg.sender] >= userStake, "Underflow in userTotalBets");
-
-        // Update mappings before external calls
-        userBets[msg.sender][_outcomeIndex] = 0;
-        userTotalBets[msg.sender] -= userStake; // Decrease user's total bets
-        outcomeStakes[_outcomeIndex] -= userStake;
-        totalStaked -= userStake;
-
-        // Transfer tokens back to user
-        protocolToken.transfer(msg.sender, userStake);
-
-        emit BetWithdrawn(msg.sender, userStake, _outcomeIndex);
-    }
-
-    /**
-     * @notice Cancels the event. Cannot be called after the event start time.
-     */
-    function cancelEvent() external onlyEventManager inStatus(EventStatus.Open) {
-        require(block.timestamp < startTime - 1 hours, "Cannot cancel event within 1 hour of start time");
-        status = EventStatus.Cancelled;
-
-        emit EventCancelled();
-    }
-
-    /**
      * @notice Allows users to create or contribute to a dispute within the dispute period.
      * @param _reason A brief reason for the dispute (only required for the first contribution).
      * @param _amount The amount the user wants to contribute to the dispute.
      */
-    function contributeToDispute(string calldata _reason, uint256 _amount)
-        external
-        nonReentrant
-        inStatus(EventStatus.Resolved)
-    {
+    function contributeToDispute(string calldata _reason, uint256 _amount) external nonReentrant inStatus(EventStatus.Resolved) {
         require(block.timestamp <= disputeDeadline, "Dispute period has ended");
         require(_amount >= minDisputeContribution, "Contribution below minimum");
         require(msg.sender != address(0), "Invalid user address");
@@ -358,26 +259,23 @@ contract Event is ReentrancyGuard {
     }
 
     /**
-     * @notice Resolves the dispute. Can only be called by EventManager.
-     * @param _finalOutcome The final outcome after dispute resolution.
+     * @notice Allows users to refund their dispute contributions if the target is not met.
      */
-    function resolveDispute(uint256 _finalOutcome) external onlyEventManager nonReentrant {
-        require(disputeStatus == DisputeStatus.Disputed, "No dispute to resolve");
-        require(_finalOutcome < outcomes.length, "Invalid outcome index");
+    function refundDisputeContributions() external nonReentrant {
+        require(block.timestamp > disputeDeadline, "Dispute period not over");
+        require(block.timestamp <= disputeRefundDeadline, "Refund period has ended");
+        require(disputeStatus == DisputeStatus.Resolved || disputeStatus == DisputeStatus.None, "Dispute is unresolved");
+        require(totalDisputeContributions < disputeCollateralTarget, "Dispute target met");
+        uint256 contribution = disputingUsers[msg.sender];
+        require(contribution > 0, "No contributions to refund");
 
-        // Update dispute status before external calls
-        disputeStatus = DisputeStatus.Resolved;
+        // Update state before external calls
+        disputingUsers[msg.sender] = 0;
 
-        uint256 initialOutcome = winningOutcome;
-        bool winningOutcomeChanged = _finalOutcome != winningOutcome;
+        // Transfer tokens back to user
+        protocolToken.transfer(msg.sender, contribution);
 
-        if (winningOutcomeChanged) {
-            winningOutcome = _finalOutcome;
-            // Emit event for outcome change
-            emit EventResolved(_finalOutcome);
-        }
-
-        emit DisputeResolved(initialOutcome, _finalOutcome);
+        emit DisputeContributionRefunded(msg.sender, contribution);
     }
 
     /**
@@ -399,43 +297,14 @@ contract Event is ReentrancyGuard {
         protocolToken.transfer(creator, toCreator);
         protocolToken.transfer(EventManager(eventManager).protocolFeeRecipient(), toProtocol);
 
-        // Burn tokens
+        // Burn tokens by sending to zero address
         protocolToken.burn(toBurn);
 
         emit DisputeContributionsDistributed(toCreator, toProtocol, toBurn);
     }
 
-    /**
-     * @notice Refunds all bets if no one bet on the winning outcome.
-     */
-    function refundAllBets() external onlyEventManager inStatus(EventStatus.Resolved) {
-        require(outcomeStakes[winningOutcome] == 0, "Winning bets exist");
-        // Allow users to withdraw their bets
-        status = EventStatus.Cancelled;
-        emit BetsRefunded();
-    }
-
-    /**
-     * @notice Refunds dispute contributions to users if dispute is resolved in favor of the initial outcome.
-     */
-    function refundDisputeContributions() external onlyEventManager {
-        require(disputeStatus == DisputeStatus.Resolved, "Dispute not resolved");
-        require(totalDisputeContributions > 0, "No dispute contributions to refund");
-
-        uint256 totalContributions = totalDisputeContributions;
+    function resetTotalDisputeContributions() external onlyEventManager {
         totalDisputeContributions = 0;
-
-        // Refund dispute contributions to users
-        for (uint256 i = 0; i < disputingUserAddresses.length; i++) {
-            address user = disputingUserAddresses[i];
-            uint256 userContribution = disputingUsers[user];
-            disputingUsers[user] = 0;
-
-            // Transfer tokens back to user
-            protocolToken.transfer(user, userContribution);
-
-            emit DisputeContributionRefunded(user, userContribution);
-        }
     }
 
     /**
@@ -464,6 +333,143 @@ contract Event is ReentrancyGuard {
         }
 
         emit UnclaimedDisputeContributionsCollected(unclaimedContributions);
+    }
+
+    /**
+     * @notice Returns the list of disputing user addresses.
+     */
+    function getDisputingUsers() external view returns (address[] memory) {
+        return disputingUserAddresses;
+    }
+
+    /**
+     * @notice Allows users who bet on the winning outcome to claim their payouts.
+     */
+    function claimPayout() external nonReentrant returns (uint256 userPayout) {
+        require(block.timestamp > disputeDeadline, "Dispute period not over");
+        require(status == EventStatus.Resolved || status == EventStatus.Closed, "Event not resolved or closed");
+        require(disputeStatus != DisputeStatus.Disputed, "Dispute is unresolved");
+        require(!hasClaimed[msg.sender], "Payout already claimed");
+        require(msg.sender != address(0), "Invalid user address");
+
+        uint256 userStake = userBets[msg.sender][winningOutcome];
+        require(userStake > 0, "No winning bet to claim");
+
+        uint256 winningStake = outcomeStakes[winningOutcome];
+        require(winningStake > 0, "No stakes on winning outcome");
+
+        // Mark as claimed before external calls to prevent reentrancy
+        hasClaimed[msg.sender] = true;
+
+        // Calculate user's share with high precision to prevent rounding errors
+        uint256 loot = totalStaked - winningStake;
+        uint256 fee = (loot * protocolFeePercentage) / 100;
+        uint256 netLoot = loot - fee;
+
+        userPayout = userStake + ((userStake * netLoot * 1e18) / winningStake) / 1e18;
+
+        // Handle last claimant edge case
+        uint256 contractBalance = protocolToken.balanceOf(address(this));
+        if (contractBalance < userPayout) {
+            userPayout = contractBalance;
+        }
+
+        totalPayouts += userPayout;
+
+        // Transfer payout to user
+        protocolToken.transfer(msg.sender, userPayout);
+
+        emit PayoutClaimed(msg.sender, userPayout);
+    }
+
+    /**
+     * @notice Allows users to withdraw their bets if the event is cancelled or refunded.
+     * @param _outcomeIndex The index of the outcome to withdraw the bet from.
+     */
+    function withdrawBet(uint256 _outcomeIndex) external nonReentrant {
+        require(_outcomeIndex < outcomes.length, "Invalid outcome index");
+        require(msg.sender != address(0), "Invalid user address");
+        uint256 userStake = userBets[msg.sender][_outcomeIndex];
+        require(userStake > 0, "No bet to withdraw");
+
+        require(
+            status == EventStatus.Cancelled || (status == EventStatus.Resolved && outcomeStakes[winningOutcome] == 0),
+            "Withdrawals not allowed"
+        );
+
+        // Ensure no underflow in userTotalBets
+        require(userTotalBets[msg.sender] >= userStake, "Underflow in userTotalBets");
+
+        // Update mappings before external calls
+        userBets[msg.sender][_outcomeIndex] = 0;
+        userTotalBets[msg.sender] -= userStake; // Decrease user's total bets
+        outcomeStakes[_outcomeIndex] -= userStake;
+        totalStaked -= userStake;
+
+        // Transfer tokens back to user
+        protocolToken.transfer(msg.sender, userStake);
+
+        emit BetWithdrawn(msg.sender, userStake, _outcomeIndex);
+    }
+
+    /**
+     * @notice Pays the fees to the protocol and the event creator.
+     * @param protocolFeeRecipient The address to receive the protocol fees.
+     * @param winningOutcomeChanged Indicates if the winning outcome was changed due to a dispute.
+     */
+    function payFees(address protocolFeeRecipient, bool winningOutcomeChanged) external onlyEventManager inStatus(EventStatus.Resolved) {
+        require(protocolFeeRecipient != address(0), "Invalid fee recipient address");
+        uint256 winningStake = outcomeStakes[winningOutcome];
+
+        if (winningStake > 0) {
+            uint256 loot = totalStaked - winningStake;
+            uint256 fee = (loot * protocolFeePercentage) / 100;
+
+            if (disputeStatus == DisputeStatus.Resolved && winningOutcomeChanged) {
+                // Creator lost the dispute; protocol takes full fee
+                protocolToken.transfer(protocolFeeRecipient, fee);
+            } else {
+                // Split fee between protocol and creator
+                protocolToken.transfer(protocolFeeRecipient, fee / 2);
+                protocolToken.transfer(creator, fee / 2);
+            }
+        }
+    }
+
+    /**
+     * @notice Cancels the event. Cannot be called after the event start time.
+     */
+    function cancelEvent() external onlyEventManager inStatus(EventStatus.Open) {
+        require(block.timestamp < startTime - 1 hours, "Cannot cancel event within 1 hour of start time");
+        status = EventStatus.Cancelled;
+
+        emit EventCancelled();
+    }
+
+    /**
+     * @notice Resolves the dispute. Can only be called by EventManager.
+     * @param _finalOutcome The final outcome after dispute resolution.
+     */
+    function resolveDispute(uint256 _finalOutcome) external onlyEventManager nonReentrant {
+        require(disputeStatus == DisputeStatus.Disputed, "No dispute to resolve");
+        require(_finalOutcome < outcomes.length, "Invalid outcome index");
+
+        // Update dispute status before external calls
+        disputeStatus = DisputeStatus.Resolved;
+
+        uint256 initialOutcome = winningOutcome;
+        bool winningOutcomeChanged = _finalOutcome != winningOutcome;
+
+        if (winningOutcomeChanged) {
+            winningOutcome = _finalOutcome;
+            // Emit event for outcome change
+            emit EventResolved(_finalOutcome);
+        }
+
+        emit DisputeResolved(initialOutcome, _finalOutcome);
+
+        // Adjust fee distribution based on dispute outcome
+        EventManager(eventManager).notifyDisputeResolution(address(this), winningOutcomeChanged);
     }
 
     // View functions
@@ -521,17 +527,12 @@ contract Event is ReentrancyGuard {
     }
 
     /**
-     * @notice Returns the list of disputing user addresses.
+     * @notice Refunds all bets if no one bet on the winning outcome.
      */
-    function getDisputingUsers() external view returns (address[] memory) {
-        return disputingUserAddresses;
-    }
-
-    /**
-     * @notice Returns whether a user has claimed their payout.
-     * @param _user The user's address.
-     */
-    function hasUserClaimed(address _user) external view returns (bool) {
-        return hasClaimed[_user];
+    function refundAllBets() external onlyEventManager inStatus(EventStatus.Resolved) {
+        require(outcomeStakes[winningOutcome] == 0, "Winning bets exist");
+        // Allow users to withdraw their bets
+        status = EventStatus.Cancelled;
+        emit BetsRefunded();
     }
 }
