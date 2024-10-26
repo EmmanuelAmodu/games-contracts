@@ -14,7 +14,7 @@ contract StackBets is ReentrancyGuard, Ownable {
     struct BetSequence {
         address[] eventAddresses;      // Sequence of Event contract addresses
         uint256[] outcomeIndexes;      // Desired outcomes corresponding to each event
-        uint256 betAmount;             // Amount to bet
+        uint256[] betAmounts;          // Bet amounts for each event
         uint256 currentIndex;          // Current position in the sequence
         bool active;                   // Indicates if the sequence is active
         uint256[] skippedIndices;      // Indices of events that were skipped
@@ -32,9 +32,12 @@ contract StackBets is ReentrancyGuard, Ownable {
     // Mapping from event address to array of UserSequence
     mapping(address => UserSequence[]) public eventToUserSequences;
 
-    // Modifier to allow only Event manager
+    // List of approved Event contracts
+    mapping(address => bool) public approvedEventContracts;
+
+    // Modifier to allow only EventManager
     modifier onlyEventManager() {
-        require(msg.sender == address(eventManager), "Caller is not a valid Event Manager contract");
+        require(msg.sender == address(eventManager), "Caller is not the EventManager contract");
         _;
     }
 
@@ -44,26 +47,42 @@ contract StackBets is ReentrancyGuard, Ownable {
     event BetSkipped(address indexed user, uint256 sequenceId, address eventAddress, string reason);
     event BetSequenceEnded(address indexed user, uint256 sequenceId);
     event WinningsCollected(address indexed user, uint256 amount);
-    event TokensDeposited(address indexed user, uint256 amount);
-    event TokensWithdrawn(address indexed user, uint256 amount);
-    event OwnerUpdated(address newOwner);
+    event EmergencyWithdrawal(address to, uint256 amount);
     event EventContractAdded(address eventContract);
     event EventContractRemoved(address eventContract);
 
-    // List of approved Event contracts
-    mapping(address => bool) public approvedEventContracts;
-
     constructor(address initialOwner, address _eventManager, address _protocolToken) Ownable(initialOwner) {
         require(_protocolToken != address(0), "Invalid token address");
+        require(_eventManager != address(0), "Invalid EventManager address");
         protocolToken = IPepperBaseTokenV1(_protocolToken);
         eventManager = EventManager(_eventManager);
+    }
+
+    /**
+     * @notice Adds an approved Event contract.
+     * @param eventContract The address of the Event contract to approve.
+     */
+    function addApprovedEventContract(address eventContract) external onlyEventManager {
+        require(eventContract != address(0), "Invalid Event contract address");
+        approvedEventContracts[eventContract] = true;
+        emit EventContractAdded(eventContract);
+    }
+
+    /**
+     * @notice Removes an approved Event contract.
+     * @param eventContract The address of the Event contract to remove.
+     */
+    function removeApprovedEventContract(address eventContract) external onlyOwner {
+        require(approvedEventContracts[eventContract], "Event contract not approved");
+        delete approvedEventContracts[eventContract];
+        emit EventContractRemoved(eventContract);
     }
 
     /**
      * @notice Creates a new bet sequence and places the initial bet.
      * @param eventAddresses Array of Event contract addresses.
      * @param outcomeIndexes Array of desired outcome indices corresponding to each event.
-     * @param amount The total amount to be used for the bet sequence.
+     * @param amount The initial amount to bet.
      */
     function createBetSequence(
         address[] calldata eventAddresses,
@@ -74,163 +93,207 @@ contract StackBets is ReentrancyGuard, Ownable {
         require(eventAddresses.length > 0, "At least one event required");
         require(eventAddresses.length == outcomeIndexes.length, "Mismatched inputs");
 
-        // Transfer tokens to this contract
+        // Transfer tokens from the user to this contract
         protocolToken.transferFrom(msg.sender, address(this), amount);
 
         // Create a new bet sequence
         BetSequence storage sequence = userBetSequences[msg.sender].push();
         sequence.eventAddresses = eventAddresses;
         sequence.outcomeIndexes = outcomeIndexes;
-        sequence.betAmount = amount; // Set initial bet amount
+        sequence.betAmounts = new uint256[](eventAddresses.length);
         sequence.currentIndex = 0;
         sequence.active = true;
-        sequence.skippedIndices = new uint256[](0);
+        // sequence.skippedIndices is automatically initialized to an empty array
         sequence.totalWinnings = 0;
 
         sequenceId = userBetSequences[msg.sender].length - 1;
 
+        // Set the initial bet amount
+        sequence.betAmounts[sequence.currentIndex] = amount;
+
         // Place the initial bet
-        _placeBet(msg.sender, sequenceId);
+        _attemptNextBet(msg.sender, sequenceId);
 
         emit BetSequenceCreated(msg.sender, sequenceId);
     }
 
     /**
-     * @notice Internal function to place a bet on a specific event.
-     * @param user The address of the user.
-     * @param sequenceId The ID of the bet sequence.
-     */
-    function _placeBet(address user, uint256 sequenceId) internal {
-        BetSequence storage sequence = userBetSequences[user][sequenceId];
-        require(sequence.active, "Bet sequence inactive");
-        require(sequence.currentIndex < sequence.eventAddresses.length, "No more events in sequence");
-
-        address eventAddress = sequence.eventAddresses[sequence.currentIndex];
-        uint256 outcomeIndex = sequence.outcomeIndexes[sequence.currentIndex];
-        Event eventContract = Event(eventAddress);
-
-        // Check if event is open for betting and before start time
-        if (eventContract.status() != Event.EventStatus.Open || block.timestamp >= eventContract.startTime()) {
-            // Event not open for betting, skip it
-            sequence.skippedIndices.push(sequence.currentIndex);
-            emit BetSkipped(user, sequenceId, eventAddress, "Event not open for betting");
-            sequence.currentIndex++;
-            _attemptNextBet(user, sequenceId);
-            return;
-        }
-
-        // Approve Event contract to spend tokens
-        protocolToken.approve(eventAddress, sequence.betAmount);
-
-        // Place bet on Event contract
-        eventContract.placeBet(outcomeIndex, sequence.betAmount);
-
-        // Capture the amount placed for accurate event emission
-        uint256 amountPlaced = sequence.betAmount;
-
-        // Reset betAmount after placing the bet
-        sequence.betAmount = 0;
-
-        emit BetPlaced(user, sequenceId, eventAddress, outcomeIndex, amountPlaced);
-
-        // Register this sequence in the eventToUserSequences mapping
-        eventToUserSequences[eventAddress].push(UserSequence({
-            user: user,
-            sequenceId: sequenceId
-        }));
-    }
-
-    /**
-     * @notice Attempts to place the next bet in the sequence after handling skips.
+     * @notice Internal function to attempt placing the next bet in the sequence.
      * @param user The address of the user.
      * @param sequenceId The ID of the bet sequence.
      */
     function _attemptNextBet(address user, uint256 sequenceId) internal {
         BetSequence storage sequence = userBetSequences[user][sequenceId];
-        if (sequence.currentIndex >= sequence.eventAddresses.length) {
-            // Sequence completed
-            sequence.active = false;
-            emit BetSequenceEnded(user, sequenceId);
-            return;
+
+        while (sequence.currentIndex < sequence.eventAddresses.length) {
+            address eventAddress = sequence.eventAddresses[sequence.currentIndex];
+            uint256 outcomeIndex = sequence.outcomeIndexes[sequence.currentIndex];
+
+            // Check if the event is approved
+            if (!approvedEventContracts[eventAddress]) {
+                sequence.skippedIndices.push(sequence.currentIndex);
+                emit BetSkipped(user, sequenceId, eventAddress, "Event not approved");
+                sequence.currentIndex++;
+                continue;
+            }
+
+            Event eventContract = Event(eventAddress);
+
+            // Check if event is open for betting and before start time
+            if (eventContract.status() != Event.EventStatus.Open || block.timestamp >= eventContract.startTime()) {
+                // Event not open for betting, skip it
+                sequence.skippedIndices.push(sequence.currentIndex);
+                emit BetSkipped(user, sequenceId, eventAddress, "Event not open for betting");
+                sequence.currentIndex++;
+                continue;
+            }
+
+            uint256 betAmount = sequence.betAmounts[sequence.currentIndex];
+
+            // Approve the Event contract to spend tokens
+            protocolToken.increaseAllowance(eventAddress, betAmount);
+
+            // Place bet on the Event contract (bet is placed under StackBets contract's address)
+            eventContract.placeBet(sequence.outcomeIndexes[sequence.currentIndex], betAmount);
+
+            // Move to the next index for future bets
+            sequence.currentIndex++;
+
+            // Emit the BetPlaced event
+            emit BetPlaced(user, sequenceId, eventAddress, outcomeIndex, betAmount);
+
+            // Register this sequence in the eventToUserSequences mapping
+            eventToUserSequences[eventAddress].push(UserSequence({
+                user: user,
+                sequenceId: sequenceId
+            }));
+
+            // Exit the loop after placing the bet
+            break;
         }
 
-        // Place the next bet
-        _placeBet(user, sequenceId);
+        // If all events have been processed, mark the sequence as inactive
+        if (sequence.currentIndex >= sequence.eventAddresses.length) {
+            sequence.active = false;
+            emit BetSequenceEnded(user, sequenceId);
+        }
     }
 
     /**
-     * @notice Called by Event contracts to notify StackBets of an event's outcome.
+     * @notice Called by the EventManager to notify StackBets of an event's outcome.
      * @param eventAddress The address of the event that was resolved.
      */
     function notifyOutcome(address eventAddress) external onlyEventManager nonReentrant {
         UserSequence[] storage sequences = eventToUserSequences[eventAddress];
         Event eventContract = Event(eventAddress);
-    
-        require(eventContract.status() == Event.EventStatus.Closed, "Event not closed yet");
         require(sequences.length > 0, "No sequences waiting on this event");
 
-        // Create a temporary array to hold sequences to process
-        UserSequence[] memory sequencesToProcess = new UserSequence[](sequences.length);
-        uint256 count = 0;
-
-        // Copy sequences to a memory array for iteration
-        for (uint256 i = 0; i < sequences.length; i++) {
-            sequencesToProcess[count] = sequences[i];
-            count++;
+        if (eventContract.status() == Event.EventStatus.Closed) {
+            distributePayout(eventContract, sequences);
         }
 
-        // Clear the original array to prevent reprocessing
-        delete eventToUserSequences[eventAddress];
+        if (eventContract.status() == Event.EventStatus.Cancelled) {
+            withdrawBetAndDistribute(eventContract, sequences);
+        }
 
-        // Interact with the Event contract to claim total payout
-        uint256 totalPayout = eventContract.claimPayout();
+        delete approvedEventContracts[eventAddress];
+    }
 
-        // Retrieve the winning outcome
+    function distributePayout(Event eventContract, UserSequence[] storage sequences) internal {
         uint256 winningOutcome = eventContract.winningOutcome();
+        uint256 totalPayout = eventContract.claimPayout();
+        uint256 totalStakeOnWinningOutcome = eventContract.getUserBet(address(this), winningOutcome);
 
-        // Retrieve total stake on winning outcome
-        uint256 winningStake = eventContract.outcomeStakes(winningOutcome);
-
-        require(winningStake > 0, "No stakes on winning outcome");
-
-        // Iterate over each sequence and distribute winnings
-        for (uint256 i = 0; i < count; i++) {
-            address user = sequencesToProcess[i].user;
-            uint256 sequenceId = sequencesToProcess[i].sequenceId;
+        require(totalStakeOnWinningOutcome > 0, "StackBets contract has no stake on winning outcome");
+    
+        // Iterate over each sequence and process winnings
+        for (uint256 i = 0; i < sequences.length; i++) {
+            address user = sequences[i].user;
+            uint256 sequenceId = sequences[i].sequenceId;
             BetSequence storage sequence = userBetSequences[user][sequenceId];
 
             if (!sequence.active) {
                 continue; // Skip inactive sequences
             }
 
-            // Ensure the current event in the sequence matches the notified event
-            if (sequence.currentIndex >= sequence.eventAddresses.length || sequence.eventAddresses[sequence.currentIndex] != eventAddress) {
+            uint256 eventIndex = sequence.currentIndex - 1; // Adjust index since we incremented after placing the bet
+            if (sequence.eventAddresses[eventIndex] != address(eventContract)) {
                 continue; // Mismatch in expected event
             }
 
-            uint256 desiredOutcome = sequence.outcomeIndexes[sequence.currentIndex];
-            uint256 userBetAmount = sequence.betAmount; // Current bet amount
+            uint256 desiredOutcome = sequence.outcomeIndexes[eventIndex];
+            uint256 userBetAmount = sequence.betAmounts[eventIndex];
+
+            uint256 userWinnings = 0;
 
             if (desiredOutcome == winningOutcome) {
+                // User won
                 // Calculate user's share of the total payout
-                uint256 userShare = (userBetAmount * totalPayout) / winningStake;
+                userWinnings = (userBetAmount * totalPayout) / totalStakeOnWinningOutcome;
 
                 // Update total winnings
-                sequence.totalWinnings += userShare;
+                sequence.totalWinnings += userWinnings;
 
-                // Update betAmount for the next bet
-                sequence.betAmount = userShare;
-
-                // Place the next bet using winnings
-                _placeBet(user, sequenceId);
+                // Set bet amount for the next event
+                if (sequence.currentIndex < sequence.eventAddresses.length) {
+                    sequence.betAmounts[sequence.currentIndex] = userWinnings;
+                    // Attempt to place the next bet
+                    _attemptNextBet(user, sequenceId);
+                } else {
+                    // Sequence completed
+                    sequence.active = false;
+                    emit BetSequenceEnded(user, sequenceId);
+                }
             } else {
-                // User lost the bet, terminate the sequence
+                // User lost, sequence ends
                 sequence.active = false;
-                sequence.betAmount = 0; // Reset betAmount
                 emit BetSequenceEnded(user, sequenceId);
-                // No action needed as winnings are zero
             }
         }
+
+        // Clean up
+        delete eventToUserSequences[address(eventContract)];
+    }
+
+    function withdrawBetAndDistribute(Event eventContract, UserSequence[] storage sequences) internal {
+        string[] memory outcomes = eventContract.getOutcomes();
+
+        uint256 totalBets = 0;
+        for (uint256 i = 0; i < outcomes.length; i++) {
+            totalBets += eventContract.withdrawBet(i);
+        }
+
+        // Iterate over each sequence and process refund
+        for (uint256 i = 0; i < sequences.length; i++) {
+            address user = sequences[i].user;
+            uint256 sequenceId = sequences[i].sequenceId;
+            BetSequence storage sequence = userBetSequences[user][sequenceId];
+
+            if (!sequence.active) {
+                continue; // Skip inactive sequences
+            }
+
+            uint256 eventIndex = sequence.currentIndex - 1; // Adjust index since we incremented after placing the bet
+            if (sequence.eventAddresses[eventIndex] != address(eventContract)) {
+                continue; // Mismatch in expected event
+            }
+
+            uint256 userBetAmount = sequence.betAmounts[eventIndex];
+
+            // Set bet amount for the next event
+            if (sequence.currentIndex < sequence.eventAddresses.length) {
+                sequence.betAmounts[sequence.currentIndex] = userBetAmount;
+                // Attempt to place the next bet
+                _attemptNextBet(user, sequenceId);
+            } else {
+                // Sequence completed
+                sequence.active = false;
+                emit BetSequenceEnded(user, sequenceId);
+            }
+        }
+
+        // Clean up
+        delete eventToUserSequences[address(eventContract)];
     }
 
     /**
@@ -239,12 +302,13 @@ contract StackBets is ReentrancyGuard, Ownable {
      */
     function collectSequenceWinnings(uint256 sequenceId) external nonReentrant {
         BetSequence storage sequence = userBetSequences[msg.sender][sequenceId];
-        require(sequence.active == false, "Sequence is still active");
+        require(!sequence.active, "Sequence is still active");
         require(sequence.totalWinnings > 0, "No winnings to collect");
 
         uint256 amount = sequence.totalWinnings;
         sequence.totalWinnings = 0;
 
+        // Transfer winnings to the user
         protocolToken.transfer(msg.sender, amount);
         emit WinningsCollected(msg.sender, amount);
     }
@@ -290,7 +354,9 @@ contract StackBets is ReentrancyGuard, Ownable {
      */
     function emergencyWithdraw(address to, uint256 amount) external onlyOwner nonReentrant {
         require(to != address(0), "Invalid recipient");
-        require(protocolToken.balanceOf(address(this)) >= amount, "Insufficient contract balance");
+        uint256 contractBalance = protocolToken.balanceOf(address(this));
+        require(contractBalance >= amount, "Insufficient contract balance");
         protocolToken.transfer(to, amount);
+        emit EmergencyWithdrawal(to, amount);
     }
 }

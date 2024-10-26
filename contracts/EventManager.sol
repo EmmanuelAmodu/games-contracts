@@ -5,11 +5,16 @@ import {IPepperBaseTokenV1} from "./interfaces/IPepperBaseTokenV1.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Event} from "./Event.sol";
 import {Governance} from "./Governance.sol";
+import {StackBets} from "./StackBets.sol";
 
 contract EventManager is ReentrancyGuard {
     string public constant VERSION = "0.1.1";
     address public protocolFeeRecipient;
     address[] public allEvents;
+    uint256 public constant MAX_OUTCOMES = 10;
+    uint256 public constant MAX_REPUTATION = 100;
+    uint256 public maxCollateral = 1e23;
+    int256 public reputationThreshold = -10;
 
     IPepperBaseTokenV1 public protocolToken;
 
@@ -20,6 +25,9 @@ contract EventManager is ReentrancyGuard {
 
     // Governance contract
     Governance public governance;
+
+    // StackBets contract
+    StackBets public stackBets;
 
     // Mapping from creator to their events
     mapping(address => address[]) public creatorEvents;
@@ -77,22 +85,20 @@ contract EventManager is ReentrancyGuard {
         string memory _category,
         string[] memory _outcomes,
         uint256 _startTime,
-        uint256 _endTime,
-        uint256 _collateralAmount
+        uint256 _endTime
     ) external nonReentrant returns (address eventAddress, uint256 eventId) {
-        require(_collateralAmount > 0, "Collateral amount must be greater than zero");
-        require(_collateralAmount <= 1e24, "Collateral amount exceeds maximum limit"); // Example maximum
         require(_startTime >= block.timestamp + 2 hours, "Start time must be at least 2 hours in the future");
         require(_endTime > _startTime, "End time must be after start time");
-        require(_outcomes.length >= 2 && _outcomes.length <= 10, "Invalid number of outcomes");
+        require(_outcomes.length >= 2 && _outcomes.length <= MAX_OUTCOMES, "Invalid number of outcomes");
         require(bytes(_title).length > 0, "Title cannot be empty");
         require(bytes(_description).length > 0, "Description cannot be empty");
         require(bytes(_category).length > 0, "Category cannot be empty");
-        require(creatorsReputation[msg.sender] > -30, "Creator can not create events due to low reputation");
+        require(creatorsReputation[msg.sender] > reputationThreshold, "Creator can not create events due to low reputation");
 
         // Initialize creator's trust multiplier if not set
         initializeCreatorsReputation(msg.sender);
 
+        uint256 collateralAmount = computeCollateralAmount();
         // Deploy a new Event contract
         eventId = allEvents.length;
         Event newEvent = new Event(
@@ -104,15 +110,18 @@ contract EventManager is ReentrancyGuard {
             _startTime,
             _endTime,
             msg.sender,
-            _collateralAmount,
+            collateralAmount,
             address(this),
             address(protocolToken)
         );
 
         eventAddress = address(newEvent);
 
+        // Add the event to the StackBets contract
+        stackBets.addApprovedEventContract(eventAddress);
+
         // Transfer collateral from the creator to the EventManager for this event
-        lockCollateral(eventAddress, msg.sender, _collateralAmount);
+        lockCollateral(eventAddress, msg.sender, collateralAmount);
 
         allEvents.push(eventAddress);
         creatorEvents[msg.sender].push(eventAddress);
@@ -126,12 +135,14 @@ contract EventManager is ReentrancyGuard {
     function getAllOpenEvents() external view returns (address[] memory) {
         uint256 openEventCount = 0;
 
+        // Count the number of open events
         for (uint256 i = 0; i < allEvents.length; i++) {
             if (Event(allEvents[i]).status() == Event.EventStatus.Open) {
                 openEventCount++;
             }
         }
 
+        // Collect all open events
         address[] memory openEvents = new address[](openEventCount);
         uint256 index = 0;
         for (uint256 i = 0; i < allEvents.length; i++) {
@@ -141,21 +152,24 @@ contract EventManager is ReentrancyGuard {
             }
         }
 
-        // sort by creator reputation descending
-        address[] memory sortedEvents = new address[](openEventCount);
-        for (uint256 i = 0; i < openEvents.length; i++) {
-            sortedEvents[i] = openEvents[i];
+        // Sort openEvents by creator reputation in descending order
+        for (uint256 i = 0; i < openEvents.length - 1; i++) {
+            uint256 maxIndex = i;
             for (uint256 j = i + 1; j < openEvents.length; j++) {
                 if (creatorsReputation[Event(openEvents[j]).creator()] >
-                    creatorsReputation[Event(sortedEvents[i]).creator()]) {
-                    address temp = sortedEvents[i];
-                    sortedEvents[i] = openEvents[j];
-                    sortedEvents[j] = temp;
+                    creatorsReputation[Event(openEvents[maxIndex]).creator()]) {
+                    maxIndex = j;
                 }
+            }
+            if (maxIndex != i) {
+                // Swap openEvents[i] and openEvents[maxIndex]
+                address temp = openEvents[i];
+                openEvents[i] = openEvents[maxIndex];
+                openEvents[maxIndex] = temp;
             }
         }
 
-        return sortedEvents;
+        return openEvents;
     }
 
     /**
@@ -188,6 +202,8 @@ contract EventManager is ReentrancyGuard {
 
         if (eventContract.status() == Event.EventStatus.Resolved) {
             eventContract.closeEvent();
+
+            stackBets.notifyOutcome(_eventAddress);
         }
 
         emit EventClosed(_eventAddress);
@@ -211,21 +227,6 @@ contract EventManager is ReentrancyGuard {
         isCollateralLocked[_eventAddress] = true;
 
         emit CollateralLocked(_eventAddress, _amount);
-    }
-
-    /**
-     * @notice Increases the locked collateral for a specific event.
-     */
-    function increaseCollateral(address _eventAddress, uint256 _amount) public onlyEventCreator(_eventAddress) nonReentrant {
-        require(isCollateralLocked[_eventAddress], "No collateral locked for this event");
-        require(_amount > 0, "Amount must be greater than zero");
-        require(_amount <= 1e24, "Amount exceeds maximum limit"); // Example maximum
-
-        // Transfer additional collateral tokens from the creator to this contract
-        protocolToken.transferFrom(msg.sender, address(this), _amount);
-        collateralBalances[_eventAddress] += _amount;
-
-        emit CollateralIncreased(_eventAddress, _amount);
     }
 
     /**
@@ -268,6 +269,7 @@ contract EventManager is ReentrancyGuard {
         require(block.timestamp < _event.startTime() - 1 hours, "Cannot cancel event within 1 hour of start time");
 
         _event.cancelEvent();
+        stackBets.notifyOutcome(_eventAddress);
 
         // Release collateral back to the creator
         releaseCollateral(_eventAddress);
@@ -377,6 +379,10 @@ contract EventManager is ReentrancyGuard {
     function initializeCreatorsReputation(address creator) internal {
         if (creatorsReputation[creator] == int256(0)) {
             creatorsReputation[creator] = 1;
+        } else if (creatorsReputation[creator] > int256(MAX_REPUTATION)) {
+            creatorsReputation[creator] = int256(MAX_REPUTATION);
+        } else if (creatorsReputation[creator] < -int256(MAX_REPUTATION)) {
+            creatorsReputation[creator] = -int256(MAX_REPUTATION);
         }
     }
 
@@ -448,6 +454,11 @@ contract EventManager is ReentrancyGuard {
         emit ForfeitedCollateralClaimed(_eventAddress, msg.sender, amount);
     }
 
+    function setStackBets(address _stackBets) external onlyOwner {
+        require(_stackBets != address(0), "Invalid address");
+        stackBets = StackBets(_stackBets);
+    }
+
     /**
      * @notice Allows the protocol to collect unclaimed forfeited collateral after a certain period.
      * @param _eventAddress The address of the event.
@@ -472,5 +483,43 @@ contract EventManager is ReentrancyGuard {
     function notifyDisputeResolution(address _eventAddress, bool outcomeChanged) external {
         require(msg.sender == _eventAddress, "Only event contract can notify");
         disputeOutcomeChanged[_eventAddress] = outcomeChanged;
+    }
+
+    /**
+     * @notice Allows governance to update the reputation threshold.
+     * @param _threshold The new reputation threshold.
+     */
+    function changeReputationThreshold(int256 _threshold) external onlyOwner {
+        reputationThreshold = _threshold;
+    }
+
+    /**
+     * @notice Allows governance to update the maximum collateral that can be locked by a creator.
+     * @param _maxCollateral The maximum collateral that can be locked by a creator.
+     */
+    function setMaxCollateral(uint256 _maxCollateral) external onlyOwner {
+        maxCollateral = _maxCollateral;
+    }
+
+    /**
+     * @notice Computes the collateral amount based on the creator's reputation.
+     */
+    function computeCollateralAmount() public view returns (uint256 collateralAmount) {
+        // Recalculate collateralDiscount and collateralAmount
+        int256 collateralDiscount = int256(maxCollateral) * creatorsReputation[msg.sender] / int256(MAX_REPUTATION);
+        int256 calculatedCollateralAmount = int256(maxCollateral) - collateralDiscount;
+
+        // Ensure collateralAmount is not negative
+        if (calculatedCollateralAmount < 0) {
+            collateralAmount = 0;
+        } else {
+            collateralAmount = uint256(calculatedCollateralAmount);
+        }
+
+        // Enforce a minimum collateral amount if necessary
+        uint256 minimumCollateral = 1e18; // Example minimum of 1 token
+        if (collateralAmount < minimumCollateral) {
+            collateralAmount = minimumCollateral;
+        }
     }
 }

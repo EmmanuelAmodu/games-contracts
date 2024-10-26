@@ -386,10 +386,10 @@ contract Event is ReentrancyGuard {
      * @notice Allows users to withdraw their bets if the event is cancelled or refunded.
      * @param _outcomeIndex The index of the outcome to withdraw the bet from.
      */
-    function withdrawBet(uint256 _outcomeIndex) external nonReentrant {
+    function withdrawBet(uint256 _outcomeIndex) external nonReentrant returns (uint256 userStake) {
         require(_outcomeIndex < outcomes.length, "Invalid outcome index");
         require(msg.sender != address(0), "Invalid user address");
-        uint256 userStake = userBets[msg.sender][_outcomeIndex];
+        userStake = userBets[msg.sender][_outcomeIndex];
         require(userStake > 0, "No bet to withdraw");
 
         require(
