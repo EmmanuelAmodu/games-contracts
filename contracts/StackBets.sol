@@ -72,7 +72,7 @@ contract StackBets is ReentrancyGuard, Ownable {
      * @notice Removes an approved Event contract.
      * @param eventContract The address of the Event contract to remove.
      */
-    function removeApprovedEventContract(address eventContract) external onlyOwner {
+    function removeApprovedEventContract(address eventContract) external onlyEventManager {
         require(approvedEventContracts[eventContract], "Event contract not approved");
         delete approvedEventContracts[eventContract];
         emit EventContractRemoved(eventContract);
@@ -151,7 +151,7 @@ contract StackBets is ReentrancyGuard, Ownable {
             uint256 betAmount = sequence.betAmounts[sequence.currentIndex];
 
             // Approve the Event contract to spend tokens
-            protocolToken.increaseAllowance(eventAddress, betAmount);
+            protocolToken.approve(eventAddress, betAmount);
 
             // Place bet on the Event contract (bet is placed under StackBets contract's address)
             eventContract.placeBet(sequence.outcomeIndexes[sequence.currentIndex], betAmount);
@@ -186,14 +186,15 @@ contract StackBets is ReentrancyGuard, Ownable {
     function notifyOutcome(address eventAddress) external onlyEventManager nonReentrant {
         UserSequence[] storage sequences = eventToUserSequences[eventAddress];
         Event eventContract = Event(eventAddress);
-        require(sequences.length > 0, "No sequences waiting on this event");
 
-        if (eventContract.status() == Event.EventStatus.Closed) {
-            distributePayout(eventContract, sequences);
-        }
+        if (sequences.length > 0) {
+            if (eventContract.status() == Event.EventStatus.Closed) {
+                distributePayout(eventContract, sequences);
+            }
 
-        if (eventContract.status() == Event.EventStatus.Cancelled) {
-            withdrawBetAndDistribute(eventContract, sequences);
+            if (eventContract.status() == Event.EventStatus.Cancelled) {
+                withdrawBetAndDistribute(eventContract, sequences);
+            }
         }
 
         delete approvedEventContracts[eventAddress];
@@ -260,6 +261,11 @@ contract StackBets is ReentrancyGuard, Ownable {
 
         uint256 totalBets = 0;
         for (uint256 i = 0; i < outcomes.length; i++) {
+            uint256 betAmount = eventContract.getUserBet(address(this), i);
+            if (betAmount == 0) {
+                continue;
+            }
+
             totalBets += eventContract.withdrawBet(i);
         }
 
@@ -345,6 +351,15 @@ contract StackBets is ReentrancyGuard, Ownable {
         }
 
         return activeSequences;
+    }
+
+    function getUserBetSequences() public view returns (BetSequence[] memory) {
+        return userBetSequences[msg.sender];
+    }
+
+    function getUserOneBetSequences(uint256 sequenceId) public view returns (BetSequence memory) {
+        require(sequenceId < userBetSequences[msg.sender].length, "Invalid sequence ID");
+        return userBetSequences[msg.sender][sequenceId];
     }
 
     /**

@@ -110,7 +110,6 @@ contract EventManager is ReentrancyGuard {
             _startTime,
             _endTime,
             msg.sender,
-            collateralAmount,
             address(this),
             address(protocolToken)
         );

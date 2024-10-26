@@ -114,7 +114,6 @@ contract Event is ReentrancyGuard {
         uint256 _startTime,
         uint256 _endTime,
         address _creator,
-        uint256 _collateralAmount,
         address _eventManager,
         address _protocolToken
     ) {
@@ -133,7 +132,6 @@ contract Event is ReentrancyGuard {
         startTime = _startTime;
         endTime = _endTime;
         creator = _creator;
-        collateralAmount = _collateralAmount;
         eventManager = _eventManager;
         status = EventStatus.Open;
         createTime = block.timestamp;
