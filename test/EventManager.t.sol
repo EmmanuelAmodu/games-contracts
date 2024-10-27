@@ -1,726 +1,375 @@
-// // SPDX-License-Identifier: MIT
-// pragma solidity ^0.8.17;
-
-// import "forge-std/Test.sol";
-// import "../contracts/EventManager.sol";
-// import "../contracts/Event.sol";
-// import "../contracts/Governance.sol";
-// import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-// import "@openzeppelin/contracts/utils/Strings.sol";
-
-// contract MockToken is ERC20 {
-//     constructor() ERC20("MockToken", "MTKN") {
-//         _mint(msg.sender, 1e30); // Mint a large amount to the deployer
-//     }
-
-//     function mint(address to, uint256 amount) external {
-//         _mint(to, amount);
-//     }
-
-//     function burn(uint256 amount) external {
-//         _burn(msg.sender, amount);
-//     }
-// }
-
-// contract EventManagerTest is Test {
-//     MockToken token;
-//     EventManager eventManager;
-//     Governance governance;
-//     Event eventContract;
-
-//     address owner = address(0x1);
-//     address creator = address(0x2);
-//     address user1 = address(0x3);
-//     address user2 = address(0x4);
-//     address protocolFeeRecipient = address(0x5);
-//     address admin = address(0x6);
-
-//     string[] outcomes = ["Team A wins", "Team B wins"];
-//     uint256 collateralAmount = 1000e18; // 1000 tokens
-
-//     function setUp() public {
-//         // Set msg.sender to owner
-//         vm.startPrank(owner);
-
-//         // Deploy MockToken
-//         token = new MockToken();
-
-//         // Deploy Governance contract and set owner
-//         governance = new Governance(owner);
-
-//         // Deploy EventManager contract
-//         eventManager = new EventManager(
-//             address(token),
-//             address(governance),
-//             protocolFeeRecipient
-//         );
-
-//         // Approve admin
-//         governance.addAdmin(admin);
-
-//         vm.stopPrank(); // Stop owner prank
-
-//         // Mint tokens to creator and users
-//         token.mint(creator, 1e24);
-//         token.mint(user1, 1e24);
-//         token.mint(user2, 1e24);
-
-//         // Creator approves EventManager to spend tokens
-//         vm.startPrank(creator);
-//         token.approve(address(eventManager), type(uint256).max);
-//         vm.stopPrank();
-
-//         // Users approve EventManager to spend tokens (if needed)
-//         vm.startPrank(user1);
-//         token.approve(address(eventManager), type(uint256).max);
-//         vm.stopPrank();
-
-//         vm.startPrank(user2);
-//         token.approve(address(eventManager), type(uint256).max);
-//         vm.stopPrank();
-//     }
-
-//     function testInitialization() public {
-//         // Test that the EventManager contract is initialized correctly
-//         assertEq(eventManager.protocolFeeRecipient(), protocolFeeRecipient);
-//         assertEq(address(eventManager.protocolToken()), address(token));
-//         assertEq(address(eventManager.governance()), address(governance));
-//         assertEq(eventManager.bettingMultiplier(), 100);
-//     }
-
-//     function testCreateEvent() public {
-//         vm.startPrank(creator);
-
-//         // Create an event
-//         (address eventAddress, uint256 eventId) = eventManager.createEvent(
-//             "Match A vs B",
-//             "Description",
-//             "Sports",
-//             outcomes,
-//             block.timestamp + 3 hours, // Start time in 3 hours
-//             block.timestamp + 5 hours, // End time in 5 hours
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-
-//         // Verify that the event is created
-//         address retrievedEventAddress = eventManager.getEvent(eventId);
-//         assertEq(eventAddress, retrievedEventAddress);
-
-//         // Verify that collateral is locked
-//         uint256 lockedCollateral = eventManager.collateralBalances(eventAddress);
-//         assertEq(lockedCollateral, collateralAmount);
-
-//         // Verify that the event is stored in creatorEvents
-//         address[] memory creatorEvents = eventManager.getAllCreatorEvents(creator);
-//         assertEq(creatorEvents[0], eventAddress);
-
-//         // Verify that the event is in allEvents
-//         address[] memory allEvents = eventManager.getAllOpenEvents();
-//         assertEq(allEvents[0], eventAddress);
-//     }
-
-//     function testCannotCreateEventWithInvalidParameters() public {
-//         vm.startPrank(creator);
-
-//         // Attempt to create an event with invalid collateral amount
-//         vm.expectRevert("Collateral amount must be greater than zero");
-//         eventManager.createEvent(
-//             "Invalid Event",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             0 // Zero collateral
-//         );
-
-//         // Attempt to create an event with start time in the past
-//         vm.expectRevert("Start time must be at least 2 hours in the future");
-//         eventManager.createEvent(
-//             "Invalid Event",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 1 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-//     }
-
-//     function testIncreaseCollateral() public {
-//         // First, create an event
-//         vm.startPrank(creator);
-
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Match A vs B",
-//             "Description",
-//             "Sports",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         // Increase collateral
-//         uint256 additionalCollateral = 500e18; // 500 tokens
-//         eventManager.increaseCollateral(eventAddress, additionalCollateral);
-
-//         vm.stopPrank();
-
-//         // Verify that collateral is increased
-//         uint256 totalCollateral = eventManager.collateralBalances(eventAddress);
-//         assertEq(totalCollateral, collateralAmount + additionalCollateral);
-//     }
-
-//     function testOnlyCreatorCanIncreaseCollateral() public {
-//         // First, create an event
-//         vm.startPrank(creator);
-
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Match A vs B",
-//             "Description",
-//             "Sports",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-
-//         // User1 tries to increase collateral
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only event creator can call");
-//         eventManager.increaseCollateral(eventAddress, 100e18);
-//         vm.stopPrank();
-//     }
-
-//     function testResolveDisputeOutcomeChanged() public {
-//         // Setup: Creator creates an event
-//         vm.startPrank(creator);
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Match A vs B",
-//             "Description",
-//             "Sports",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-//         vm.stopPrank();
-
-//         // Users interact with the event
-//         Event resolvedEventContract = Event(eventAddress);
-
-//         vm.startPrank(user1);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(0, 100e18);
-//         vm.stopPrank();
-
-//         vm.startPrank(user2);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(1, 100e18);
-//         vm.stopPrank();
-    
-//         vm.warp(block.timestamp + 4 hours); // Move to after event start time
-
-//         // Fast forward to after event end time
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         // Creator submits an incorrect outcome
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(1); // Assume 1 is incorrect
-//         vm.stopPrank();
-
-//         // User1 contributes to dispute
-//         vm.startPrank(user1);
-//         resolvedEventContract.contributeToDispute("Incorrect outcome", 100e18);
-//         vm.stopPrank();
-
-//         // Admin resolves the dispute, changing the outcome
-//         vm.startPrank(owner);
-//         eventManager.resolveDispute(eventAddress, 0); // Correct outcome is 0
-//         vm.stopPrank();
-
-//         // Verify that the disputeOutcomeChanged is true
-//         bool outcomeChanged = eventManager.disputeOutcomeChanged(eventAddress);
-//         assertEq(outcomeChanged, true);
-
-//         // Verify that the creator's collateral is forfeited
-//         uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
-//         assertEq(collateralBalance, 0);
-
-//         // User1 can claim their share of forfeited collateral
-//         vm.startPrank(user1);
-//         eventManager.claimForfeitedCollateral(eventAddress);
-//         vm.stopPrank();
-//     }
-
-//     function testResolveDisputeOutcomeUpheld() public {
-//         // Setup: Creator creates an event
-//         vm.startPrank(creator);
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Match A vs B",
-//             "Description",
-//             "Sports",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-//         vm.stopPrank();
-
-//         // Fast forward to after event end time
-//         Event resolvedEventContract = Event(eventAddress);
-
-//         vm.startPrank(user1);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(0, 100e18);
-//         vm.stopPrank();
-
-//         vm.startPrank(user2);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(1, 100e18);
-//         vm.stopPrank();
-
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         // Creator submits the correct outcome
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(0); // Correct outcome is 0
-//         vm.stopPrank();
-
-//         // User1 contributes to dispute
-//         vm.startPrank(user1);
-//         resolvedEventContract.contributeToDispute("Disagree with outcome", 100e18);
-//         vm.stopPrank();
-
-//         // Admin resolves the dispute, upholding the outcome
-//         vm.startPrank(admin);
-//         eventManager.resolveDispute(eventAddress, 0); // Outcome remains 0
-//         vm.stopPrank();
-
-//         // Verify that the disputeOutcomeChanged is false
-//         bool outcomeChanged = eventManager.disputeOutcomeChanged(eventAddress);
-//         assertEq(outcomeChanged, false);
-
-//         // Creator's collateral should still be locked until claimed
-//         uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
-//         assertEq(collateralBalance, collateralAmount);
-
-//         vm.warp(resolvedEventContract.disputeDeadline() + 1);
-
-//         // Creator can claim their collateral
-//         vm.startPrank(creator);
-//         eventManager.claimCollateral(eventAddress);
-//         vm.stopPrank();
-
-//         // Collateral should now be zero
-//         collateralBalance = eventManager.collateralBalances(eventAddress);
-//         assertEq(collateralBalance, 0);
-//     }
-
-//     function testOnlyApprovedAdminCanResolveDispute() public {
-//         // Setup: Creator creates an event and dispute is raised
-//         vm.startPrank(creator);
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event with Dispute",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-//         vm.stopPrank();
-
-//         // Fast forward to after event end time and submit outcome
-//         Event resolvedEventContract = Event(eventAddress);
-
-//         vm.startPrank(user1);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(0, 100e18);
-//         vm.stopPrank();
-
-//         vm.startPrank(user2);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(1, 100e18);
-//         vm.stopPrank();
-
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(0);
-//         vm.stopPrank();
-
-//         // User1 contributes to dispute
-//         vm.startPrank(user1);
-//         resolvedEventContract.contributeToDispute("Dispute", 100e18);
-//         vm.stopPrank();
-
-//         // Unauthorized user tries to resolve dispute
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only approved admin can call");
-//         eventManager.resolveDispute(eventAddress, 1);
-//         vm.stopPrank();
-//     }
-
-//     function testClaimForfeitedCollateral() public {
-//         // Setup similar to previous test where outcome changes
-//         vm.startPrank(creator);
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event with Forfeited Collateral",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-//         vm.stopPrank();
-
-//         Event resolvedEventContract = Event(eventAddress);
-        
-//         vm.startPrank(user1);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(0, 100e18);
-//         vm.stopPrank();
-    
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(1); // Incorrect outcome
-//         vm.stopPrank();
-
-//         vm.startPrank(user1);
-//         resolvedEventContract.contributeToDispute("Incorrect outcome", 100e18);
-//         vm.stopPrank();
-
-//         vm.startPrank(owner);
-//         eventManager.resolveDispute(eventAddress, 0); // Correct outcome is 0
-//         vm.stopPrank();
-
-//         // User1 claims forfeited collateral
-//         vm.startPrank(user1);
-//         eventManager.claimForfeitedCollateral(eventAddress);
-//         vm.stopPrank();
-
-//         // Verify that the user cannot claim again
-//         vm.startPrank(user1);
-//         vm.expectRevert("Already claimed");
-//         eventManager.claimForfeitedCollateral(eventAddress);
-//         vm.stopPrank();
-//     }
-
-//     function testCollectUnclaimedCollateral() public {
-//         // Setup where some users do not claim their share
-//         vm.startPrank(creator);
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event with Unclaimed Collateral",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-//         vm.stopPrank();
-
-//         Event resolvedEventContract = Event(eventAddress);
-
-//         vm.startPrank(user1);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(0, 100e18);
-//         vm.stopPrank();
-
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(1); // Incorrect outcome
-//         vm.stopPrank();
-
-//         vm.startPrank(user1);
-//         resolvedEventContract.contributeToDispute("Incorrect outcome", 100e18);
-//         vm.stopPrank();
-
-//         vm.startPrank(owner);
-//         eventManager.resolveDispute(eventAddress, 0); // Correct outcome is 0
-//         vm.stopPrank();
-
-//         // Fast forward 30 days plus dispute deadline
-//         vm.warp(resolvedEventContract.disputeDeadline() + 31 days);
-
-//         // Owner collects unclaimed collateral
-//         vm.startPrank(owner);
-//         eventManager.collectUnclaimedCollateral(eventAddress);
-//         vm.stopPrank();
-
-//         // Verify that forfeited collateral amount is zero
-//         uint256 forfeitedAmount = eventManager.forfeitedCollateralAmounts(eventAddress);
-//         assertEq(forfeitedAmount, 0);
-//     }
-
-//     function testComputeBetLimit() public {
-//         // Initialize creator's trust multiplier (should be 0)
-//         int256 trustMultiplier = eventManager.creatorsTrustMultiplier(creator);
-//         assertEq(trustMultiplier, 0);
-
-//         // Compute bet limit
-//         uint256 betLimit = eventManager.computeBetLimit(creator, collateralAmount);
-//         assertEq(betLimit, 100 * collateralAmount); // bettingMultiplier * trustMultiplier * collateralAmount
-//     }
-
-//     function testIncreaseDecreaseTrustMultiplier() public {
-//         // Owner increases trust multiplier
-//         vm.startPrank(owner);
-//         eventManager.increaseCreatorsTrustMultiplier(creator, 2); // New multiplier should be 3
-//         vm.stopPrank();
-
-//         int256 trustMultiplier = eventManager.creatorsTrustMultiplier(creator);
-//         assertEq(trustMultiplier, 3);
-
-//         // Owner decreases trust multiplier
-//         vm.startPrank(owner);
-//         eventManager.decreaseCreatorsTrustMultiplier(creator, 4); // New multiplier should be -1
-//         vm.stopPrank();
-
-//         trustMultiplier = eventManager.creatorsTrustMultiplier(creator);
-//         assertEq(trustMultiplier, -1);
-
-//         // Compute bet limit with negative multiplier
-//         uint256 betLimit = eventManager.computeBetLimit(creator, collateralAmount);
-//         assertEq(betLimit, collateralAmount / 1); // collateralAmount / abs(trustMultiplier)
-//     }
-
-//     function testOnlyOwnerCanAdjustTrustMultiplier() public {
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only owner can call");
-//         eventManager.increaseCreatorsTrustMultiplier(creator, 1);
-//         vm.stopPrank();
-//     }
-
-//     function testSetBettingMultiplier() public {
-//         vm.startPrank(owner);
-//         eventManager.setBettingMultiplier(200);
-//         vm.stopPrank();
-
-//         uint256 bettingMultiplier = eventManager.bettingMultiplier();
-//         assertEq(bettingMultiplier, 200);
-//     }
-
-//     function testOnlyOwnerCanSetBettingMultiplier() public {
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only owner can call");
-//         eventManager.setBettingMultiplier(200);
-//         vm.stopPrank();
-//     }
-
-//     function testNotifyDisputeResolution() public {
-//         // This function is called by the Event contract; test that it can only be called by authorized address
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only event contract can notify");
-//         eventManager.notifyDisputeResolution(address(0), true);
-//         vm.stopPrank();
-//     }
-
-//     function testGetAllOpenEvents() public {
-//         // Create multiple events
-//         vm.startPrank(creator);
-
-//         for (uint256 i = 0; i < 3; i++) {
-//             eventManager.createEvent(
-//                 string(abi.encodePacked("Event ", Strings.toString(i))),
-//                 "Description",
-//                 "Category",
-//                 outcomes,
-//                 block.timestamp + 3 hours,
-//                 block.timestamp + 5 hours,
-//                 collateralAmount
-//             );
-//         }
-
-//         vm.stopPrank();
-
-//         // Get all open events
-//         address[] memory openEvents = eventManager.getAllOpenEvents();
-//         assertEq(openEvents.length, 3);
-//     }
-
-//     function testEventClosureAfterResolutionNoBetOnWinningOutCome() public {
-//         // Create an event
-//         vm.startPrank(creator);
-
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event to Close",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-
-//         Event resolvedEventContract = Event(eventAddress);
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         // Submit outcome
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(0);
-//         vm.stopPrank();
-
-//         // Wait for dispute period to end
-//         vm.warp(resolvedEventContract.disputeDeadline() + 1);
-
-//         // Creator claims collateral, which should trigger event closure
-//         vm.startPrank(creator);
-//         eventManager.claimCollateral(eventAddress);
-//         vm.stopPrank();
-
-//         // Verify that the event status is Closed
-//         Event.EventStatus status = resolvedEventContract.status();
-//         assertEq(uint256(status), uint256(Event.EventStatus.Cancelled));
-//     }
-
-//     function testEventClosureAfterResolution() public {
-//         // Create an event
-//         vm.startPrank(creator);
-
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event to Close",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-
-//         Event resolvedEventContract = Event(eventAddress);
-
-//         vm.startPrank(user1);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(0, 100e18);
-//         vm.stopPrank();
-
-//         vm.startPrank(user2);
-//         token.approve(eventAddress, type(uint256).max);
-//         resolvedEventContract.placeBet(1, 100e18);
-//         vm.stopPrank();
-
-//         vm.warp(resolvedEventContract.endTime() + 1);
-
-//         // Submit outcome
-//         vm.startPrank(creator);
-//         resolvedEventContract.submitOutcome(0);
-//         vm.stopPrank();
-
-//         // Wait for dispute period to end
-//         vm.warp(resolvedEventContract.disputeDeadline() + 1);
-
-//         // Creator claims collateral, which should trigger event closure
-//         vm.startPrank(creator);
-//         eventManager.claimCollateral(eventAddress);
-//         vm.stopPrank();
-
-//         // Verify that the event status is Closed
-//         Event.EventStatus status = resolvedEventContract.status();
-//         assertEq(uint256(status), uint256(Event.EventStatus.Closed));
-//     }
-
-//     function testCannotCancelEventWithinOneHourOfStart() public {
-//         // Create an event that starts in 2 hours
-//         vm.startPrank(creator);
-
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event to Cancel",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 2 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-
-//         // Move time to within 1 hour of start time
-//         vm.warp(block.timestamp + 1 hours + 1 minutes);
-
-//         // Attempt to cancel the event
-//         vm.startPrank(creator);
-//         vm.expectRevert("Cannot cancel event within 1 hour of start time");
-//         eventManager.cancelEvent(eventAddress);
-//         vm.stopPrank();
-//     }
-
-//     function testCancelEvent() public {
-//         // Create an event that starts in 3 hours
-//         vm.startPrank(creator);
-
-//         (address eventAddress, ) = eventManager.createEvent(
-//             "Event to Cancel",
-//             "Description",
-//             "Category",
-//             outcomes,
-//             block.timestamp + 3 hours,
-//             block.timestamp + 5 hours,
-//             collateralAmount
-//         );
-
-//         vm.stopPrank();
-
-//         // Move time to before 1 hour of start time
-//         vm.warp(block.timestamp + 1 hours);
-
-//         // Cancel the event
-//         vm.startPrank(creator);
-//         eventManager.cancelEvent(eventAddress);
-//         vm.stopPrank();
-
-//         // Verify that collateral is released
-//         uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
-//         assertEq(collateralBalance, 0);
-//     }
-
-//     function testTransferGovernance() public {
-//         vm.startPrank(owner);
-//         address newGovernance = address(0x7);
-//         eventManager.transferGovernance(newGovernance);
-//         vm.stopPrank();
-
-//         Governance updatedGovernance = eventManager.governance();
-//         assertEq(address(updatedGovernance), newGovernance);
-//     }
-
-//     function testOnlyOwnerCanTransferGovernance() public {
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only owner can call");
-//         eventManager.transferGovernance(address(0x7));
-//         vm.stopPrank();
-//     }
-
-//     function testSetProtocolFeeRecipient() public {
-//         vm.startPrank(owner);
-//         address newRecipient = address(0x8);
-//         eventManager.setProtocolFeeRecipient(newRecipient);
-//         vm.stopPrank();
-
-//         address updatedRecipient = eventManager.protocolFeeRecipient();
-//         assertEq(updatedRecipient, newRecipient);
-//     }
-
-//     function testOnlyOwnerCanSetProtocolFeeRecipient() public {
-//         vm.startPrank(user1);
-//         vm.expectRevert("Only owner can call");
-//         eventManager.setProtocolFeeRecipient(address(0x8));
-//         vm.stopPrank();
-//     }
-// }
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
+
+import "forge-std/Test.sol";
+import "../contracts/EventManager.sol";
+import "../contracts/Event.sol";
+import "../contracts/Governance.sol";
+import "../contracts/StackBets.sol";
+import "../contracts/interfaces/IPepperBaseTokenV1.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract MockPepperBaseTokenV1 is ERC20, IPepperBaseTokenV1 {
+    constructor() ERC20("Mock Pepper Token", "MPT") {
+        _mint(msg.sender, 1e24); // Mint tokens to the deployer
+    }
+
+    function totalSupply() public view override(ERC20, IPepperBaseTokenV1) returns (uint256) {
+        return super.totalSupply();
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function burn(uint256 amount) external override(IPepperBaseTokenV1) {
+        _burn(msg.sender, amount);
+    }
+}
+
+contract EventManagerTest is Test {
+    EventManager public eventManager;
+    MockPepperBaseTokenV1 public protocolToken;
+    Governance public governance;
+    StackBets public stackBets;
+
+    address public owner = address(0x1);
+    address public protocolFeeRecipient = address(0x2);
+    address public creator = address(0x3);
+    address public user = address(0x4);
+    address public admin = address(0x5);
+
+    string[] public outcomes = ["Team A wins", "Team B wins"];
+
+    function setUp() public {
+        // Deploy the mock token and contracts
+        vm.startPrank(owner);
+        protocolToken = new MockPepperBaseTokenV1();
+        governance = new Governance(owner);
+        eventManager = new EventManager(address(protocolToken), address(governance), protocolFeeRecipient);
+        stackBets = new StackBets(owner, address(eventManager), address(protocolToken));
+        eventManager.setStackBets(address(stackBets));
+        vm.stopPrank();
+
+        // Mint tokens to the creator and user
+        protocolToken.mint(creator, 1e24);
+        protocolToken.mint(user, 1e24);
+
+        // Approve the EventManager to spend tokens
+        vm.prank(creator);
+        protocolToken.approve(address(eventManager), type(uint256).max);
+
+        vm.prank(user);
+        protocolToken.approve(address(eventManager), type(uint256).max);
+
+        // Add admin to governance
+        vm.prank(owner);
+        governance.addAdmin(admin);
+    }
+
+    function testCreateEvent() public {
+        // Creator creates an event
+        vm.prank(creator);
+        uint256 startTime = block.timestamp + 3 hours;
+        uint256 endTime = block.timestamp + 5 hours;
+
+        (address eventAddress, uint256 eventId) = eventManager.createEvent(
+            "Match A vs B",
+            "Exciting match between A and B",
+            "Sports",
+            outcomes,
+            startTime,
+            endTime
+        );
+
+        assertTrue(eventAddress != address(0), "Event address should not be zero");
+        assertEq(eventId, 0, "Event ID should be zero");
+
+        // Check that the event is stored correctly
+        address storedEventAddress = eventManager.getEvent(eventId);
+        assertEq(eventAddress, storedEventAddress, "Stored event address should match");
+
+        // Check that the collateral was locked
+        uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
+
+        // Compute expected collateral amount based on creator's reputation
+        vm.prank(creator);
+        uint256 expectedCollateral = eventManager.computeCollateralAmount();
+
+        assertEq(collateralBalance, expectedCollateral, "Collateral balance should match expected amount");
+    }
+
+    function testCannotCreateEventWithLowReputation() public {
+        // Decrease creator's reputation below the threshold
+        vm.prank(owner);
+        eventManager.decreaseCreatorsReputation(creator, 100); // Assuming initial reputation is 1
+
+        // Attempt to create an event
+        vm.prank(creator);
+        uint256 startTime = block.timestamp + 3 hours;
+        uint256 endTime = block.timestamp + 5 hours;
+
+        vm.expectRevert("Creator can not create events due to low reputation");
+        eventManager.createEvent(
+            "Match A vs B",
+            "Exciting match between A and B",
+            "Sports",
+            outcomes,
+            startTime,
+            endTime
+        );
+    }
+
+    function testClaimCollateral() public {
+        // Creator creates an event
+        vm.prank(creator);
+        uint256 startTime = block.timestamp + 3 hours;
+        uint256 endTime = block.timestamp + 5 hours;
+
+        (address eventAddress, ) = eventManager.createEvent(
+            "Match A vs B",
+            "Exciting match between A and B",
+            "Sports",
+            outcomes,
+            startTime,
+            endTime
+        );
+
+        Event eventContract = Event(eventAddress);
+
+        // Fast forward to after the event end time
+        vm.warp(endTime + 1);
+
+        // Creator submits the outcome
+        vm.prank(creator);
+        eventContract.submitOutcome(0);
+
+        // Wait for dispute period to end
+        vm.warp(block.timestamp + 2 hours);
+
+        // Creator claims collateral
+        vm.prank(creator);
+        eventManager.claimCollateral(eventAddress);
+
+        // Collateral balance should be zero
+        uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
+        assertEq(collateralBalance, 0, "Collateral balance should be zero after claiming");
+
+        // Creator's balance should reflect the returned collateral
+        uint256 creatorBalance = protocolToken.balanceOf(creator);
+        uint256 expectedBalance = 1e24; // Since collateral is returned
+        assertEq(creatorBalance, expectedBalance, "Creator's balance should reflect returned collateral");
+    }
+
+    function testCancelEvent() public {
+        // Creator creates an event
+        vm.prank(creator);
+        uint256 startTime = block.timestamp + 3 hours;
+        uint256 endTime = block.timestamp + 5 hours;
+
+        (address eventAddress, ) = eventManager.createEvent(
+            "Match A vs B",
+            "Exciting match between A and B",
+            "Sports",
+            outcomes,
+            startTime,
+            endTime
+        );
+
+        // Creator cancels the event
+        vm.prank(creator);
+        eventManager.cancelEvent(eventAddress);
+
+        // Collateral should be released back to the creator
+        uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
+        assertEq(collateralBalance, 0, "Collateral balance should be zero after cancellation");
+
+        // Verify the event status
+        Event eventContract = Event(eventAddress);
+        assertEq(uint256(eventContract.status()), uint256(Event.EventStatus.Cancelled), "Event status should be Cancelled");
+    }
+
+    function testResolveDisputeOutcomeChanged() public {
+        // Creator creates an event
+        vm.prank(creator);
+        uint256 startTime = block.timestamp + 3 hours;
+        uint256 endTime = block.timestamp + 5 hours;
+
+        (address eventAddress, ) = eventManager.createEvent(
+            "Match A vs B",
+            "Exciting match between A and B",
+            "Sports",
+            outcomes,
+            startTime,
+            endTime
+        );
+
+        Event eventContract = Event(eventAddress);
+
+        // User places a bet
+        vm.startPrank(user);
+        protocolToken.approve(eventAddress, 100e18);
+        eventContract.placeBet(1, 100e18);
+        vm.stopPrank();
+
+        // Fast forward to after the event end time
+        vm.warp(endTime + 1);
+
+        // Creator submits the wrong outcome
+        vm.prank(creator);
+        eventContract.submitOutcome(0);
+
+        // User contributes to dispute
+        vm.startPrank(user);
+        protocolToken.approve(eventAddress, 50e18);
+        eventContract.contributeToDispute("Wrong outcome submitted", 50e18);
+        vm.stopPrank();
+
+        // Admin resolves the dispute, changing the outcome
+        vm.prank(admin);
+        eventManager.resolveDispute(eventAddress, 1);
+
+        // Collateral should be forfeited
+        uint256 collateralBalance = eventManager.collateralBalances(eventAddress);
+        assertEq(collateralBalance, 0, "Collateral should be forfeited after dispute resolution");
+
+        // Creator's reputation should decrease
+        int256 creatorReputation = eventManager.creatorsReputation(creator);
+        assertLt(creatorReputation, 1, "Creator's reputation should decrease");
+
+        // User can claim forfeited collateral
+        vm.prank(user);
+        eventManager.claimForfeitedCollateral(eventAddress);
+
+        // Verify user's balance increased
+        uint256 userBalance = protocolToken.balanceOf(user);
+        assertGt(userBalance, 1e24, "User's balance should increase due to forfeited collateral");
+    }
+
+    function testCollectUnclaimedCollateral() public {
+        uint256 startTime = block.timestamp + 3 hours;
+        uint256 endTime = block.timestamp + 5 hours;
+
+        vm.prank(creator);
+        (address eventAddress, ) = eventManager.createEvent(
+            "Match A vs B",
+            "Exciting match between A and B",
+            "Sports",
+            outcomes,
+            startTime,
+            endTime
+        );
+
+        Event eventContract = Event(eventAddress);
+
+        // User places a bet
+        vm.prank(user);
+        protocolToken.approve(eventAddress, 100e18);
+
+        vm.prank(user);
+        eventContract.placeBet(1, 100e18);
+
+        // Fast forward to after the event end time
+        vm.warp(endTime + 1);
+
+        // Creator submits the wrong outcome
+        vm.prank(creator);
+        eventContract.submitOutcome(0); // Incorrect outcome
+
+        // User contributes to dispute
+        vm.prank(user);
+        protocolToken.approve(eventAddress, 50e18);
+
+        vm.prank(user);
+        eventContract.contributeToDispute("Wrong outcome submitted", 50e18);
+
+        // Admin resolves the dispute, changing the outcome
+        vm.prank(admin);
+        eventManager.resolveDispute(eventAddress, 1); // Correct outcome
+
+        // Fast forward past the dispute refund deadline + 30 days
+        vm.warp(block.timestamp + 31 days);
+
+        // Owner collects unclaimed collateral
+        vm.prank(owner);
+        eventManager.collectUnclaimedCollateral(eventAddress);
+
+        // Forfeited collateral amount should be zero
+        uint256 forfeitedAmount = eventManager.forfeitedCollateralAmounts(eventAddress);
+        assertEq(forfeitedAmount, 0, "Forfeited collateral should be zero after collection");
+
+        // Verify that the protocol fee recipient received the unclaimed collateral
+        uint256 protocolFeeRecipientBalance = protocolToken.balanceOf(protocolFeeRecipient);
+        assertGt(protocolFeeRecipientBalance, 0, "Protocol fee recipient should have received unclaimed collateral");
+    }
+
+    function testAdministrativeFunctions() public {
+        // Test setting protocol fee recipient
+        address newRecipient = address(0x6);
+        vm.prank(owner);
+        eventManager.setProtocolFeeRecipient(newRecipient);
+        assertEq(eventManager.protocolFeeRecipient(), newRecipient, "Protocol fee recipient should be updated");
+
+        // Test transferring governance
+        address newGovernance = address(0x7);
+        vm.prank(owner);
+        eventManager.transferGovernance(newGovernance);
+        assertEq(address(eventManager.governance()), newGovernance, "Governance address should be updated");
+    }
+
+    function testReputationManagement() public {
+        // Increase reputation
+        vm.prank(owner);
+        eventManager.increaseCreatorsReputation(creator, 10);
+        int256 increasedReputation = eventManager.creatorsReputation(creator);
+
+        // Expected reputation is 1 (initialized) + 10 (increase)
+        int256 expectedReputationAfterIncrease = 1 + 10;
+        assertEq(increasedReputation, expectedReputationAfterIncrease, "Reputation should increase correctly");
+
+        // Decrease reputation
+        vm.prank(owner);
+        eventManager.decreaseCreatorsReputation(creator, 5);
+        int256 decreasedReputation = eventManager.creatorsReputation(creator);
+
+        // Expected reputation is previous reputation - 5
+        int256 expectedReputationAfterDecrease = increasedReputation - 5;
+        assertEq(decreasedReputation, expectedReputationAfterDecrease, "Reputation should decrease correctly");
+    }
+
+    function testChangeReputationThreshold() public {
+        int256 newThreshold = -20;
+        vm.prank(owner);
+        eventManager.changeReputationThreshold(newThreshold);
+        assertEq(eventManager.reputationThreshold(), newThreshold, "Reputation threshold should be updated");
+    }
+
+    function testSetMaxCollateral() public {
+        uint256 newMaxCollateral = 2e23;
+        vm.prank(owner);
+        eventManager.setMaxCollateral(newMaxCollateral);
+        assertEq(eventManager.maxCollateral(), newMaxCollateral, "Max collateral should be updated");
+    }
+
+    function testComputeCollateralAmount() public {
+        // Creator's reputation is initialized to 1
+        vm.prank(creator);
+        uint256 collateralAmount = eventManager.computeCollateralAmount();
+
+        // Expected collateral calculation
+        uint256 maxCollateral = eventManager.maxCollateral();
+        int256 reputation = eventManager.creatorsReputation(creator);
+        uint256 MAX_REPUTATION = eventManager.MAX_REPUTATION();
+
+        int256 collateralDiscount = int256(maxCollateral) * reputation / int256(MAX_REPUTATION);
+        int256 calculatedCollateral = int256(maxCollateral) - collateralDiscount;
+
+        uint256 expectedCollateral = calculatedCollateral >= 0 ? uint256(calculatedCollateral) : 0;
+        uint256 minimumCollateral = 1e18;
+        if (expectedCollateral < minimumCollateral) {
+            expectedCollateral = minimumCollateral;
+        }
+
+        assertEq(collateralAmount, expectedCollateral, "Computed collateral amount should match expected value");
+    }
+}
