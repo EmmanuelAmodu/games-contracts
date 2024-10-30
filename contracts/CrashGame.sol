@@ -12,9 +12,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     // ERC20 Protocol Token
     IERC20 public protocolToken;
 
-    // Define the salt as a constant
-    string private constant SALT = "0000000000000000000fa3b65e43e4240d71762a5bf397d5304b2596d116859c";
-
     // Game parameters
     uint256 public minimumBet = 10 * 10**18; // 10 tokens
     uint256 public maximumBet = 10000 * 10**18;   // 10,000 tokens
@@ -168,7 +165,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         require(computedCommitment == storedCommitment, "Commitment mismatch");
         
         // Compute the resolved hash
-        bytes32 resolvedHash = keccak256(abi.encodePacked(currentGameHash, secret, SALT));
+        bytes32 resolvedHash = keccak256(abi.encodePacked(currentGameHash, secret));
         
         // Calculate the multiplier using the resolved hash
         (uint256 multiplier, bytes32 hmac) = getResult(resolvedHash);
@@ -203,14 +200,13 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
             if (payout > maximumPayout) {
                 payout = maximumPayout;
             }
-
             require(protocolToken.balanceOf(address(this)) >= payout, "Insufficient contract token balance");
             
             // Mark as claimed before transferring to prevent re-entrancy
             bet.claimed = true;
             bet.isWon = true;
             bet.multiplier = result[gameHash];
-            bet.resolvedHash = keccak256(abi.encodePacked(gameHash, SALT));
+            bet.resolvedHash = keccak256(abi.encodePacked(gameHash));
             
             // Transfer payout
             bool success = protocolToken.transfer(msg.sender, payout);
@@ -222,7 +218,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
             bet.claimed = true;
             bet.isWon = false;
             bet.multiplier = result[gameHash];
-            bet.resolvedHash = keccak256(abi.encodePacked(gameHash, SALT));
+            bet.resolvedHash = keccak256(abi.encodePacked(gameHash));
         }
 
         Bet memory betData = bet;
@@ -252,7 +248,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         bool success = protocolToken.transfer(msg.sender, amount);
         require(success, "Token transfer failed");
         
-        emit Payout(msg.sender, amount);
+        emit RefundClaimed(msg.sender, gameHash, amount);
     }
 
     /**
@@ -262,8 +258,8 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
      * @return hmac The HMAC-SHA256 hash used for verification.
      */
     function getResult(bytes32 secureGameHash) public pure returns (uint256 multiplier, bytes32 hmac) {
-        // Compute HMAC-SHA256(secureGameHash, SALT)
-        hmac = hmacSha256(secureGameHash, bytes(SALT));
+        // Compute HMAC-SHA256(secureGameHash)
+        hmac = hmacSha256(secureGameHash, bytes(""));
 
         // Convert HMAC to uint256
         uint256 hmacInt = uint256(hmac);
@@ -305,7 +301,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     function hmacSha256(bytes32 key, bytes memory message) internal pure returns (bytes32 hmac) {
         // Define block size for SHA256
         uint256 blockSize = 64; // 512 bits
-
+    
         // Prepare the key
         bytes memory keyPadded = new bytes(blockSize);
         for (uint256 i = 0; i < blockSize; i++) {
@@ -315,7 +311,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
                 keyPadded[i] = 0x00; // Pad with zeros if key is shorter than block size
             }
         }
-
+    
         // Define opad and ipad
         bytes memory opad = new bytes(blockSize);
         bytes memory ipad = new bytes(blockSize);
@@ -323,7 +319,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
             opad[i] = 0x5c;
             ipad[i] = 0x36;
         }
-
+    
         // XOR key with opad and ipad
         bytes memory oKeyPad = new bytes(blockSize);
         bytes memory iKeyPad = new bytes(blockSize);
@@ -331,11 +327,11 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
             oKeyPad[i] = bytes1(keyPadded[i] ^ opad[i]);
             iKeyPad[i] = bytes1(keyPadded[i] ^ ipad[i]);
         }
-
+    
         // Perform inner SHA256 hash: SHA256(i_key_pad || message)
         bytes memory innerData = abi.encodePacked(iKeyPad, message);
         bytes32 innerHash = sha256(innerData);
-
+    
         // Perform outer SHA256 hash: SHA256(o_key_pad || inner_hash)
         bytes memory outerData = abi.encodePacked(oKeyPad, innerHash);
         hmac = sha256(outerData);
