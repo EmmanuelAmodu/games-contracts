@@ -15,7 +15,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     // Game parameters
     uint256 public minimumBet = 10 * 10**18; // 10 tokens
     uint256 public maximumBet = 10000 * 10**18;   // 10,000 tokens
-    uint256 public maximumPayout = 50000; // 500.00x
+    uint256 public maximumPayout = 50000 * 10**18; // 500.00x
     uint256 public revealTimeoutDuration = 1 minutes; // Duration after which bets can be refunded if not revealed
 
     // Struct to store player bets
@@ -88,7 +88,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
      * @dev Allows the owner to commit to a new game's secret by providing a commitment hash.
      * @param commitment The hash of the secret (e.g., keccak256(abi.encodePacked(secret))).
      */
-    function commitGame(bytes32 commitment) external onlyOwner whenNotPaused {
+    function commitGame(bytes32 commitment) external onlyOwner {
         require(currentGameHash != bytes32(0), "Previous game not resolved");
         require(gameCommitments[currentGameHash] == bytes32(0), "Commitment already set");
         
@@ -196,7 +196,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
 
         if (result[gameHash] >= bet.intendedMultiplier) {
             // Calculate payout
-            uint256 payout = (bet.amount * result[gameHash]) / 100;
+            uint256 payout = (bet.amount * bet.intendedMultiplier) / 100;
             if (payout > maximumPayout) {
                 payout = maximumPayout;
             }
@@ -285,11 +285,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         // Ensure denominator is not zero to prevent division by zero
         require(denominator != 0, "Denominator is zero");
 
-        uint256 rawMultiplier = numerator / denominator;
-
-        // Scale down by 100 to get two decimal places
-        // For example, a rawMultiplier of 250 represents a 2.50x multiplier
-        multiplier = rawMultiplier / 100;
+        multiplier = numerator / denominator;
     }
 
     /**
