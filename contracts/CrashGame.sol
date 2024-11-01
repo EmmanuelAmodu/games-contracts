@@ -16,7 +16,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     uint256 public minimumBet = 10 * 10**18; // 10 tokens
     uint256 public maximumBet = 10000 * 10**18;   // 10,000 tokens
     uint256 public maximumPayout = 50000 * 10**18; // 500.00x
-    uint256 public revealTimeoutDuration = 1 minutes; // Duration after which bets can be refunded if not revealed
 
     // Struct to store player bets
     struct Bet {
@@ -48,16 +47,11 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     // Events
     event GameCommitted(bytes32 indexed gameHash, bytes32 commitment);
     event BetPlaced(address indexed player, uint256 amount, bytes32 gameHash);
-    event BetResolved(bytes32 gameHash, uint256 multiplier, bytes32 hmac);
     event Payout(address indexed player, uint256 amount);
     event GameRevealed(bytes32 indexed gameHash, uint256 multiplier, bytes32 hmac);
-    event RefundClaimed(address indexed player, bytes32 gameHash, uint256 amount);
 
     // Current game hash
     bytes32 public currentGameHash;
-
-    // Reveal deadline for each gameHash
-    mapping(bytes32 => uint256) public gameRevealDeadline;
 
     // Constructor to set the contract deployer as the owner and initialize parameters
     constructor(
@@ -71,7 +65,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         currentGameHash = keccak256(abi.encodePacked(block.timestamp, block.prevrandao, block.number));
         gameHashes.push(currentGameHash);
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
-        gameRevealDeadline[currentGameHash] = block.timestamp + revealTimeoutDuration;
     }
 
     /// @notice Pause the contract, disabling certain functions.
@@ -94,9 +87,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         
         // Store the commitment for the current game
         gameCommitments[currentGameHash] = commitment;
-        
-        // Set the reveal deadline
-        gameRevealDeadline[currentGameHash] = block.timestamp + revealTimeoutDuration;
         
         emit GameCommitted(currentGameHash, commitment);
     }
@@ -157,7 +147,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     function revealGame(string memory secret) external onlyOwner whenNotPaused {
         require(currentGameHash != bytes32(0), "No active game");
         require(gameCommitments[currentGameHash] != bytes32(0), "No commitment found for this gameHash");
-        require(block.timestamp <= gameRevealDeadline[currentGameHash], "Reveal period has ended");
+        // require(block.timestamp <= gameRevealDeadline[currentGameHash], "Reveal period has ended");
         
         // Verify the commitment
         bytes32 computedCommitment = keccak256(abi.encodePacked(secret));
@@ -172,8 +162,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         
         // Update the game result
         result[currentGameHash] = multiplier;
-        
-        emit BetResolved(currentGameHash, multiplier, hmac);
+
         emit GameRevealed(currentGameHash, multiplier, hmac);
         
         // Prepare for the next game by setting the new currentGameHash
@@ -181,7 +170,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         currentGameHash = hmac;
         gameHashes.push(currentGameHash);
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
-        gameRevealDeadline[currentGameHash] = block.timestamp + revealTimeoutDuration;
     }
 
     /**
@@ -223,32 +211,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
 
         Bet memory betData = bet;
         return betData;
-    }
-
-    /**
-     * @dev Allows users to refund their bets if the reveal period has ended without a reveal.
-     * @param gameHash The unique game-specific hash used as the HMAC key.
-     */
-    function refundBet(bytes32 gameHash) external nonReentrant whenNotPaused {
-        require(block.timestamp > gameRevealDeadline[gameHash], "Reveal period not yet ended");
-        require(gameHash != bytes32(0), "Invalid gameHash");
-        
-        Bet storage bet = bets[gameHash][msg.sender];
-        require(bet.player == msg.sender, "Not your bet");
-        require(result[gameHash] == 0, "Game already resolved");
-        require(!bet.claimed, "Bet already refunded or claimed");
-        
-        uint256 amount = bet.amount;
-        require(amount > 0, "No amount to refund");
-        
-        // Mark as claimed to prevent reentrancy
-        bet.claimed = true;
-        
-        // Transfer tokens back to the user
-        bool success = protocolToken.transfer(msg.sender, amount);
-        require(success, "Token transfer failed");
-        
-        emit RefundClaimed(msg.sender, gameHash, amount);
     }
 
     /**
@@ -344,14 +306,6 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Allows the contract owner to set a new reveal timeout duration.
-     * @param _revealTimeoutDuration The new duration in seconds.
-     */
-    function setRevealTimeout(uint256 _revealTimeoutDuration) external onlyOwner {
-        revealTimeoutDuration = _revealTimeoutDuration;
-    }
-    
-    /**
      * @dev Allows the owner to reset the current gameHash manually.
      * Useful in case of emergencies or to handle specific scenarios.
      * @param newGameHash The new game hash to set.
@@ -363,7 +317,30 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         currentGameHash = newGameHash;
         gameHashes.push(newGameHash);
         gameCommitments[newGameHash] = bytes32(0); // No commitment yet
-        gameRevealDeadline[newGameHash] = block.timestamp + revealTimeoutDuration;
+    }
+
+    /**
+     * @dev Allows the owner to set the minimum bet amount.
+     * @param _minimumBet The new minimum bet amount.
+     */
+    function setMinimumBet(uint256 _minimumBet) external onlyOwner {
+        minimumBet = _minimumBet;
+    }
+
+    /**
+     * @dev Allows the owner to set the maximum bet amount.
+     * @param _maximumBet The new maximum bet amount.
+     */
+    function setMaximumBet(uint256 _maximumBet) external onlyOwner {
+        maximumBet = _maximumBet;
+    }
+
+    /**
+     * @dev Allows the owner to set the maximum payout multiplier.
+     * @param _maximumPayout The new maximum payout multiplier.
+     */
+    function setMaximumPayout(uint256 _maximumPayout) external onlyOwner {
+        maximumPayout = _maximumPayout;
     }
     
     /**

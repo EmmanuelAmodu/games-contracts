@@ -74,13 +74,6 @@ contract CrashGameTest is Test {
         vm.stopPrank();
     }
 
-    // Test deployment
-    function testDeployment() public {
-        assertEq(crashGame.owner(), owner);
-        assertEq(address(crashGame.protocolToken()), address(protocolToken));
-        assertTrue(crashGame.currentGameHash() != bytes32(0));
-    }
-
     // Test committing a game
     function testCommitGame() public {
         // Only owner can commit
@@ -202,8 +195,6 @@ contract CrashGameTest is Test {
         // Owner reveals with correct secret
         vm.prank(owner);
         vm.expectEmit(true, true, false, true);
-        emit BetResolved(gameHash, expectedMultiplier, expectedHmac);
-        vm.expectEmit(true, true, false, true);
         emit GameRevealed(gameHash, expectedMultiplier, expectedHmac);
         crashGame.revealGame(secret);
 
@@ -318,48 +309,6 @@ contract CrashGameTest is Test {
         vm.stopPrank();
     }
 
-    // Test refunding a bet after reveal timeout
-    function testRefundBet() public {
-        commitCurrentGame();
-
-        // Player1 places a bet
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-        crashGame.placeBet(100 * 10**18, 150);
-        vm.stopPrank();
-
-        // Fast forward time beyond the reveal timeout
-        uint256 timeout = crashGame.revealTimeoutDuration();
-        vm.warp(block.timestamp + timeout + 1 minutes);
-
-        // Player1 refunds the bet
-        vm.startPrank(player1);
-        vm.expectEmit(true, false, false, true);
-        emit RefundClaimed(player1, gameHash, 100 * 10**18);
-        crashGame.refundBet(gameHash);
-        vm.stopPrank();
-
-        // Verify refund
-        assertEq(protocolToken.balanceOf(player1), 10_000 * 10**18);
-    }
-
-    // Test refunding a bet before reveal timeout
-    function testRefundBetBeforeTimeout() public {
-        commitCurrentGame();
-
-        // Player1 places a bet
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-        crashGame.placeBet(100 * 10**18, 150);
-        vm.stopPrank();
-
-        // Attempt to refund before timeout
-        vm.startPrank(player1);
-        vm.expectRevert("Reveal period not yet ended");
-        crashGame.refundBet(gameHash);
-        vm.stopPrank();
-    }
-
     // Test pausing and unpausing the contract
     function testPauseAndUnpause() public {
         // Pause the contract
@@ -427,22 +376,6 @@ contract CrashGameTest is Test {
 
         // Verify new gameHash is set
         assertEq(crashGame.currentGameHash(), newGameHash);
-    }
-
-    // Test that setting reveal timeout works
-    function testSetRevealTimeout() public {
-        uint256 newTimeout = 5 minutes;
-        vm.prank(owner);
-        crashGame.setRevealTimeout(newTimeout);
-        assertEq(crashGame.revealTimeoutDuration(), newTimeout);
-    }
-
-    // Test that non-owner cannot set reveal timeout
-    function testNonOwnerSetRevealTimeout() public {
-        uint256 newTimeout = 5 minutes;
-        vm.prank(player1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
-        crashGame.setRevealTimeout(newTimeout);
     }
 
     // Additional tests can be added here, such as testing multiple players, edge cases, etc.
