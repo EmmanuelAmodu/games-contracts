@@ -4,23 +4,25 @@ pragma solidity ^0.8.0;
 // Import OpenZeppelin contracts for security and access control
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title On-Chain Crash Game with ERC20 and Commit-Reveal Scheme
 contract CrashGame is Ownable, ReentrancyGuard, Pausable {
-    // ERC20 Protocol Token
-    IERC20 public protocolToken;
+    using SafeERC20 for IERC20;
 
-    // Game parameters
-    uint256 public minimumBet = 10 * 10**18; // 10 tokens
-    uint256 public maximumBet = 10000 * 10**18;   // 10,000 tokens
-    uint256 public maximumPayout = 50000 * 10**18; // 500.00x
+    mapping(address => uint256) public tokenMaximumPayout;
+
+    mapping(address => uint256) private userWinnings;
+
+    mapping(address => uint256) private userLosses;
 
     // Struct to store player bets
     struct Bet {
         address player;
         uint256 amount;
+        address token;
         bytes32 gameHash;
         bytes32 resolvedHash;
         uint256 intendedMultiplier;
@@ -47,24 +49,19 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     // Events
     event GameCommitted(bytes32 indexed gameHash, bytes32 commitment);
     event BetPlaced(address indexed player, uint256 amount, bytes32 gameHash);
-    event Payout(address indexed player, uint256 amount);
+    event Payout(address indexed player, uint256 amount, bytes32 gameHash);
     event GameRevealed(bytes32 indexed gameHash, uint256 multiplier, bytes32 hmac);
 
     // Current game hash
     bytes32 public currentGameHash;
 
     // Constructor to set the contract deployer as the owner and initialize parameters
-    constructor(
-        address initialOwner,
-        address _protocolTokenAddress
-    ) Ownable(initialOwner) {
-        require(_protocolTokenAddress != address(0), "Invalid token address");
-        protocolToken = IERC20(_protocolTokenAddress);
-        
+    constructor(address initialOwner) Ownable(initialOwner) {
         // Initialize the first game hash with a unique and unpredictable value
         currentGameHash = keccak256(abi.encodePacked(block.timestamp, block.prevrandao, block.number));
         gameHashes.push(currentGameHash);
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
+        tokenMaximumPayout[address(0)] = 10 ether;
     }
 
     /// @notice Pause the contract, disabling certain functions.
@@ -77,10 +74,8 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         _unpause();
     }
 
-    /**
-     * @dev Allows the owner to commit to a new game's secret by providing a commitment hash.
-     * @param commitment The hash of the secret (e.g., keccak256(abi.encodePacked(secret))).
-     */
+    /// @dev Allows the owner to commit to a new game's secret by providing a commitment hash.
+    /// @param commitment The hash of the secret (e.g., keccak256(abi.encodePacked(secret))).
     function commitGame(bytes32 commitment) external onlyOwner {
         require(currentGameHash != bytes32(0), "Previous game not resolved");
         require(gameCommitments[currentGameHash] == bytes32(0), "Commitment already set");
@@ -91,20 +86,19 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         emit GameCommitted(currentGameHash, commitment);
     }
 
-    /**
-     * @dev Allows a player to place a bet on the current committed game.
-     * @param amount The amount of protocol tokens to bet.
-     * @param intendedMultiplier The multiplier the player aims to achieve.
-     */
-    function placeBet(uint256 amount, uint256 intendedMultiplier) external nonReentrant whenNotPaused {
-        require(amount >= minimumBet, "Bet amount below minimum");
-        require(amount <= maximumBet, "Bet amount exceeds maximum");
+    /// @dev Allows a player to place a bet on the current committed game.
+    /// @param amount The amount of protocol tokens to bet.
+    /// @param intendedMultiplier The multiplier the player aims to achieve.
+    /// @param token The address of the token to use for betting.
+    function placeBet(uint256 amount, uint256 intendedMultiplier, address token) external nonReentrant whenNotPaused {
         require(currentGameHash != bytes32(0), "No game committed");
         require(gameCommitments[currentGameHash] != bytes32(0), "Game not yet committed");
-        
+        require(tokenMaximumPayout[token] > 0, "Token not supported");
+        require(amount > 0, "Invalid bet amount");
+        require(intendedMultiplier > 100, "Invalid multiplier");
+
         // Transfer tokens from the player to the contract
-        bool success = protocolToken.transferFrom(msg.sender, address(this), amount);
-        require(success, "Token transfer failed");
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         
         // Record the bet with the current gameHash
         Bet storage existingBet = bets[currentGameHash][msg.sender];
@@ -115,6 +109,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
             amount: amount,
             gameHash: currentGameHash,
             resolvedHash: bytes32(0),
+            token: token,
             intendedMultiplier: intendedMultiplier,
             multiplier: 0, // To be set when resolved
             claimed: false,
@@ -125,11 +120,35 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         emit BetPlaced(msg.sender, amount, currentGameHash);
     }
 
-    /**
-     * @dev Returns the bets placed by all players for a specific game.
-     * @param gameHash The unique game-specific hash used as the HMAC key.
-     * @return playerBets An array of Bet structs representing the bets placed.
-     */
+    function placeBetNative(uint256 intendedMultiplier) external payable nonReentrant whenNotPaused {
+        require(currentGameHash != bytes32(0), "No game committed");
+        require(gameCommitments[currentGameHash] != bytes32(0), "Game not yet committed");
+        require(msg.value > 0, "Invalid bet amount");
+        require(intendedMultiplier > 100, "Invalid multiplier");
+
+        // Record the bet with the current gameHash
+        Bet storage existingBet = bets[currentGameHash][msg.sender];
+        require(existingBet.player == address(0), "Bet already placed");
+
+        bets[currentGameHash][msg.sender] = Bet({
+            player: msg.sender,
+            amount: msg.value,
+            gameHash: currentGameHash,
+            resolvedHash: bytes32(0),
+            token: address(0),
+            intendedMultiplier: intendedMultiplier,
+            multiplier: 0, // To be set when resolved
+            claimed: false,
+            isWon: false
+        });
+
+        participants[currentGameHash].push(msg.sender);
+        emit BetPlaced(msg.sender, msg.value, currentGameHash);
+    }
+
+    /// @dev Returns the bets placed by all players for a specific game.
+    /// @param gameHash The unique game-specific hash used as the HMAC key.
+    /// @return playerBets An array of Bet structs representing the bets placed.
     function getBets(bytes32 gameHash) external view returns (Bet[] memory) {
         address[] memory players = participants[gameHash];
         Bet[] memory playerBets = new Bet[](players.length);
@@ -140,14 +159,11 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         return playerBets;
     }
 
-    /**
-     * @dev Allows the owner to reveal the secret for the current gameHash.
-     * @param secret The secret value used to generate the commitment.
-     */
+    /// @dev Allows the owner to reveal the secret for the current gameHash.
+    /// @param secret The secret value used to generate the commitment.
     function revealGame(string memory secret) external onlyOwner whenNotPaused {
         require(currentGameHash != bytes32(0), "No active game");
         require(gameCommitments[currentGameHash] != bytes32(0), "No commitment found for this gameHash");
-        // require(block.timestamp <= gameRevealDeadline[currentGameHash], "Reveal period has ended");
         
         // Verify the commitment
         bytes32 computedCommitment = keccak256(abi.encodePacked(secret));
@@ -172,10 +188,8 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
     }
 
-    /**
-     * @dev Allows users to claim their payout after the bet is resolved and they have won.
-     * @param gameHash The unique game-specific hash used as the HMAC key.
-     */
+    /// @dev Allows users to claim their payout after the bet is resolved and they have won.
+    /// @param gameHash The unique game-specific hash used as the HMAC key.
     function claimPayout(bytes32 gameHash) external nonReentrant whenNotPaused returns (Bet memory) {
         Bet storage bet = bets[gameHash][msg.sender];
         require(bet.player == msg.sender, "Not your bet");
@@ -183,42 +197,76 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         require(result[gameHash] > 0, "Game not resolved yet");
 
         if (result[gameHash] >= bet.intendedMultiplier) {
-            // Calculate payout
-            uint256 payout = (bet.amount * bet.intendedMultiplier) / 100;
-            if (payout > maximumPayout) {
-                payout = maximumPayout;
+            if (bet.token == address(0)) {
+                _claimPayoutNative(bet, gameHash);
+            } else {
+                _claimPayoutERC20(bet, gameHash);
             }
-            require(protocolToken.balanceOf(address(this)) >= payout, "Insufficient contract token balance");
-            
-            // Mark as claimed before transferring to prevent re-entrancy
-            bet.claimed = true;
-            bet.isWon = true;
-            bet.multiplier = result[gameHash];
-            bet.resolvedHash = keccak256(abi.encodePacked(gameHash));
-            
-            // Transfer payout
-            bool success = protocolToken.transfer(msg.sender, payout);
-            require(success, "Token transfer failed");
-            
-            emit Payout(msg.sender, payout);
+            _claimPayoutERC20(bet, gameHash);
         } else {
             // Mark the bet as resolved but not won
             bet.claimed = true;
             bet.isWon = false;
             bet.multiplier = result[gameHash];
             bet.resolvedHash = keccak256(abi.encodePacked(gameHash));
+            userLosses[bet.token] += bet.amount;
         }
 
         Bet memory betData = bet;
         return betData;
     }
 
-    /**
-     * @dev Computes the crash multiplier based on the provided secure game hash.
-     * @param secureGameHash The secure game-specific hash used as the HMAC key.
-     * @return multiplier The crash multiplier scaled by 100 (e.g., 250 represents 2.50x).
-     * @return hmac The HMAC-SHA256 hash used for verification.
-     */
+    /// @dev Allows the owner to claim the payout for a specific bet in ERC20 tokens.
+    /// @param bet The bet struct containing the player's bet details.
+    /// @param gameHash The unique game-specific hash used as the HMAC key.
+    function _claimPayoutERC20(Bet storage bet, bytes32 gameHash) internal {
+        uint256 maximumPayoutAdjusted = tokenMaximumPayout[bet.token];
+
+        uint256 payout = (bet.amount * bet.intendedMultiplier) / 100;
+        if (payout > maximumPayoutAdjusted) {
+            payout = maximumPayoutAdjusted;
+        }
+        require(IERC20(bet.token).balanceOf(address(this)) >= payout, "Insufficient contract token balance");
+        
+        // Mark as claimed before transferring to prevent re-entrancy
+        bet.claimed = true;
+        bet.isWon = true;
+        bet.multiplier = result[gameHash];
+        bet.resolvedHash = keccak256(abi.encodePacked(gameHash));
+        userWinnings[bet.token] += payout;
+
+        // Transfer payout
+        IERC20(bet.token).safeTransfer(msg.sender, payout);
+        emit Payout(msg.sender, payout, gameHash);
+    }
+
+    /// @dev Allows the owner to claim the payout for a specific bet in native tokens.
+    /// @param bet The bet struct containing the player's bet details.
+    /// @param gameHash The unique game-specific hash used as the HMAC key.
+    function _claimPayoutNative(Bet storage bet, bytes32 gameHash) internal {
+        uint256 payout = bet.amount * bet.intendedMultiplier;
+        uint256 maximumPayoutAdjusted = tokenMaximumPayout[address(0)];
+
+        if (payout > maximumPayoutAdjusted) {
+            payout = maximumPayoutAdjusted;
+        }
+
+        // Mark as claimed before transferring to prevent re-entrancy
+        bet.claimed = true;
+        bet.isWon = true;
+        bet.multiplier = result[gameHash];
+        bet.resolvedHash = keccak256(abi.encodePacked(gameHash));
+        userWinnings[bet.token] += payout;
+
+        // Transfer payout
+        payable(msg.sender).transfer(payout);
+        emit Payout(msg.sender, payout, gameHash);
+    }
+
+    /// @dev Computes the crash multiplier based on the provided secure game hash.
+    /// @param secureGameHash The secure game-specific hash used as the HMAC key.
+    /// @return multiplier The crash multiplier scaled by 100 (e.g., 250 represents 2.50x).
+    /// @return hmac The HMAC-SHA256 hash used for verification.
     function getResult(bytes32 secureGameHash) public pure returns (uint256 multiplier, bytes32 hmac) {
         // Compute HMAC-SHA256(secureGameHash)
         hmac = hmacSha256(secureGameHash, bytes(""));
@@ -250,12 +298,10 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         multiplier = numerator / denominator;
     }
 
-    /**
-     * @dev Implements HMAC-SHA256 as per RFC 2104.
-     * @param key The secret key for HMAC.
-     * @param message The message to hash.
-     * @return hmac The resulting HMAC-SHA256 hash.
-     */
+    /// @dev Implements HMAC-SHA256 as per RFC 2104.
+    /// @param key The secret key for HMAC.
+    /// @param message The message to hash.
+    /// @return hmac The resulting HMAC-SHA256 hash.
     function hmacSha256(bytes32 key, bytes memory message) internal pure returns (bytes32 hmac) {
         // Define block size for SHA256
         uint256 blockSize = 64; // 512 bits
@@ -295,21 +341,24 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         hmac = sha256(outerData);
     }
     
-    /**
-     * @dev Allows the contract owner to withdraw protocol tokens from the contract.
-     * @param amount The amount of tokens to withdraw.
-     */
-    function withdrawTokens(uint256 amount) external onlyOwner nonReentrant whenNotPaused {
-        require(protocolToken.balanceOf(address(this)) >= amount, "Insufficient token balance");
-        bool success = protocolToken.transfer(owner(), amount);
-        require(success, "Token transfer failed");
+    /// @dev Allows the contract owner to withdraw protocol tokens from the contract.
+    /// @param amount The amount of tokens to withdraw.
+    function withdrawProtocolRevenue(uint256 amount, address token) external onlyOwner nonReentrant whenNotPaused {
+        require(amount > 0, "Invalid amount");
+        require(userWinnings[token] >= userLosses[token], "Insufficient balance");
+
+        if (token == address(0)) {
+            require(address(this).balance >= amount, "Insufficient ETH balance");
+            payable(owner()).transfer(amount);
+        } else {
+            require(IERC20(token).balanceOf(address(this)) >= amount, "Insufficient token balance");
+            IERC20(token).safeTransfer(owner(), amount);
+        }
     }
     
-    /**
-     * @dev Allows the owner to reset the current gameHash manually.
-     * Useful in case of emergencies or to handle specific scenarios.
-     * @param newGameHash The new game hash to set.
-     */
+    /// @dev Allows the owner to reset the current gameHash manually.
+    ///      Useful in case of emergencies or to handle specific scenarios.
+    /// @param newGameHash The new game hash to set.
     function resetCurrentGameHash(bytes32 newGameHash) external onlyOwner whenNotPaused {
         require(newGameHash != bytes32(0), "Invalid gameHash");
         require(gameCommitments[newGameHash] == bytes32(0), "GameHash already has a commitment");
@@ -319,33 +368,14 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         gameCommitments[newGameHash] = bytes32(0); // No commitment yet
     }
 
-    /**
-     * @dev Allows the owner to set the minimum bet amount.
-     * @param _minimumBet The new minimum bet amount.
-     */
-    function setMinimumBet(uint256 _minimumBet) external onlyOwner {
-        minimumBet = _minimumBet;
-    }
-
-    /**
-     * @dev Allows the owner to set the maximum bet amount.
-     * @param _maximumBet The new maximum bet amount.
-     */
-    function setMaximumBet(uint256 _maximumBet) external onlyOwner {
-        maximumBet = _maximumBet;
-    }
-
-    /**
-     * @dev Allows the owner to set the maximum payout multiplier.
-     * @param _maximumPayout The new maximum payout multiplier.
-     */
-    function setMaximumPayout(uint256 _maximumPayout) external onlyOwner {
-        maximumPayout = _maximumPayout;
+    /// @dev Allows the owner to set the maximum payout multiplier.
+    /// @param token The address of the token to set the maximum payout for.
+    /// @param _maximumPayout The new maximum payout multiplier.
+    function setMaximumPayout(address token, uint256 _maximumPayout) external onlyOwner {
+        tokenMaximumPayout[token] = _maximumPayout;
     }
     
-    /**
-     * @dev Fallback function to accept Ether if needed.
-     * (Optional if you plan to handle ETH as well)
-     */
+    /// @dev Fallback function to accept Ether if needed.
+    ///      (Optional if you plan to handle ETH as well)
     receive() external payable {}
 }
