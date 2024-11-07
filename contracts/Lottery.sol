@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title Powerball Lottery Contract with Percentage-Based Prize Distribution and Protocol Token Support
-/// @author
+/// @author Emmanuel Amodu
 /// @notice This contract implements a lottery where prizes are distributed based on percentages of the total pool, using a protocol ERC20 token.
 /// @dev The contract uses a secure commit-reveal scheme for the winning numbers and handles prize distribution according to specified percentages.
 contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
@@ -17,7 +17,7 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
     uint256 public totalPool;               // Total amount of tokens in the pool
     bytes32 public winningNumbersHash;      // Commitment to the winning numbers
     bool public isRevealed;                 // Indicates if winning numbers have been revealed
-    bool public isClosed;                   // Indicates if ticket sales are closed
+    bool public isOpen;                   // Indicates if ticket sales are closed
     uint256 public drawTimestamp;           // Timestamp when draw occurs
 
     // Winning numbers
@@ -30,7 +30,6 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
 
     // Mappings
     mapping(address => Ticket[]) public playerTickets;      // Player address to their tickets
-    mapping(address => uint256) public pendingWithdrawals;  // Player address to pending prize amount
 
     // Total pending prizes
     uint256 public totalPendingPrizes; // Total amount of pending prizes in tokens
@@ -63,13 +62,13 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
     event WinningNumbersRevealed(uint8[5] winningWhiteBalls, uint8 winningPowerBall);
     event PrizeClaimed(address indexed player, uint256 amount);
     
-    modifier whenNotClosed() {
-        require(!isClosed, "Ticket sales are closed");
+    modifier whenNotOpen() {
+        require(!isOpen, "Ticket sales are still open");
         _;
     }
 
-    modifier whenClosed() {
-        require(isClosed, "Ticket sales are still open");
+    modifier whenOpen() {
+        require(isOpen, "Ticket sales are closed");
         _;
     }
 
@@ -89,7 +88,7 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
     /// @notice Allows players to purchase a ticket with selected numbers
     /// @param whiteBalls An array of 5 unique numbers between 1 and 69
     /// @param powerBall A number between 1 and 26
-    function purchaseTicket(uint8[5] calldata whiteBalls, uint8 powerBall) external whenNotClosed nonReentrant whenNotPaused {
+    function purchaseTicket(uint8[5] calldata whiteBalls, uint8 powerBall) external whenOpen nonReentrant whenNotPaused {
         require(protocolToken.transferFrom(msg.sender, address(this), ticketPrice), "Token transfer failed");
         require(validWhiteBalls(whiteBalls), "Invalid white ball numbers");
         require(powerBall >= 1 && powerBall <= 26, "Invalid Powerball number");
@@ -117,9 +116,9 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Owner commits to the winning numbers using a hash
     /// @param _winningNumbersHash The keccak256 hash of the salt and winning numbers
-    function commitWinningNumbers(bytes32 _winningNumbersHash) external onlyOwner whenNotClosed nonReentrant whenNotPaused {
+    function commitWinningNumbers(bytes32 _winningNumbersHash) external onlyOwner whenNotOpen nonReentrant whenNotPaused {
         winningNumbersHash = _winningNumbersHash;
-        isClosed = true; // Close ticket sales
+        isOpen = true; // Open ticket sales
         drawTimestamp = block.timestamp;
     }
 
@@ -131,7 +130,7 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
         bytes32 salt,
         uint8[5] calldata whiteBalls,
         uint8 powerBall
-    ) external onlyOwner whenClosed nonReentrant whenNotPaused {
+    ) external onlyOwner whenOpen nonReentrant whenNotPaused {
         require(!isRevealed, "Winning numbers already revealed");
         require(validWhiteBalls(whiteBalls), "Invalid winning white ball numbers");
         require(powerBall >= 1 && powerBall <= 26, "Invalid winning Powerball number");
@@ -144,6 +143,7 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
         winningWhiteBalls = whiteBalls;
         winningPowerBall = powerBall;
         isRevealed = true;
+        isOpen = false; // Close ticket sales
 
         emit WinningNumbersRevealed(winningWhiteBalls, winningPowerBall);
 
@@ -164,21 +164,8 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
         }
 
         require(totalPrize > 0, "No prizes to claim");
-        pendingWithdrawals[msg.sender] += totalPrize;
-        totalPendingPrizes += totalPrize;
-    }
-
-    /// @notice Withdraw accumulated prizes
-    function withdrawPrizes() external nonReentrant whenNotPaused {
-        uint256 amount = pendingWithdrawals[msg.sender];
-        require(amount > 0, "No pending withdrawals");
-        pendingWithdrawals[msg.sender] = 0;
-        totalPendingPrizes -= amount;
-
-        // Transfer prize tokens to the player
-        require(protocolToken.transfer(msg.sender, amount), "Token transfer failed");
-
-        emit PrizeClaimed(msg.sender, amount);
+        require(protocolToken.transfer(msg.sender, totalPrize), "Token transfer failed");
+        emit PrizeClaimed(msg.sender, totalPrize);
     }
 
     /// @notice Calculates the prizes for all tickets after winning numbers are revealed

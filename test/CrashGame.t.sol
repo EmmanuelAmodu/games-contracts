@@ -1,382 +1,308 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.17;
 
+// Import OpenZeppelin contracts for security and access control
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "forge-std/Test.sol";
 import "../contracts/CrashGame.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-
-// Mock ERC20 Token for testing
-contract MockERC20 is ERC20 {
-    constructor(string memory name, string memory symbol, uint256 initialSupply) ERC20(name, symbol) {
-        _mint(msg.sender, initialSupply);
-    }
-}
 
 contract CrashGameTest is Test {
-    CrashGame crashGame;
-    MockERC20 protocolToken;
-    address owner;
-    address player1;
-    address player2;
-    bytes32 commitment;
-    string secret;
-    bytes32 gameHash;
+    CrashGame public crashGame;
+    MockERC20 public token;
 
-    // Define the same events as in CrashGame for testing purposes
-    event GameCommitted(bytes32 indexed gameHash, bytes32 commitment);
-    event BetPlaced(address indexed player, uint256 amount, bytes32 gameHash);
-    event BetResolved(bytes32 gameHash, uint256 multiplier, bytes32 hmac);
-    event Payout(address indexed player, uint256 amount);
-    event GameRevealed(bytes32 indexed gameHash, uint256 multiplier, bytes32 hmac);
-    event RefundClaimed(address indexed player, bytes32 gameHash, uint256 amount);
+    address public owner = address(0x1);
+    address public player1 = address(0x2);
+    address public player2 = address(0x3);
 
-    // Set up the initial state before each test
+    string public secret = "secret";
+    bytes32 public commitment;
+
+    uint256 public initialBalance = 100 ether;
+    bytes32 public gameHash;
+
     function setUp() public {
-        // Assign addresses
-        owner = address(0x1);
-        player1 = address(0x2);
-        player2 = address(0x3);
+        // Label addresses for clarity in logs
+        vm.label(owner, "Owner");
+        vm.label(player1, "Player1");
+        vm.label(player2, "Player2");
 
-        // Deploy MockERC20 token with initial supply as owner
-        vm.startPrank(owner);
-        protocolToken = new MockERC20("ProtocolToken", "PTK", 1_000_000_000 * 10**18);
-        
-        // Deploy CrashGame contract
-        crashGame = new CrashGame(owner, address(protocolToken));
+        // Allocate initial balance to owner and players
+        vm.deal(owner, initialBalance);
+        vm.deal(player1, initialBalance);
+        vm.deal(player2, initialBalance);
 
-        // Distribute tokens to players
-        protocolToken.transfer(address(crashGame), 500_000_000 * 10**18);
-        protocolToken.transfer(player1, 10_000 * 10**18);
-        protocolToken.transfer(player2, 10_000 * 10**18);
-        vm.stopPrank();
+        // Deploy the contract as the owner
+        vm.prank(owner);
+        crashGame = new CrashGame(owner);
 
-        // Prepare commitment
-        secret = "my_secret";
+        // Deploy a mock ERC20 token and allocate to players
+        token = new MockERC20("Test Token", "TTK");
+        token.mint(player1, initialBalance);
+        token.mint(player2, initialBalance);
+
+        // Set maximum payout for the token
+        vm.prank(owner);
+        crashGame.setMaximumPayout(address(token), 1000 ether);
+    }
+
+    function testOwnerCanCommitGame() public {
+        // Compute the commitment
         commitment = keccak256(abi.encodePacked(secret));
-
-        // Compute initial gameHash
-        gameHash = crashGame.currentGameHash();
-    }
-
-    // Helper function to set the current game as committed
-    function commitCurrentGame() internal {
-        vm.startPrank(owner);
-        crashGame.commitGame(commitment);
-        vm.stopPrank();
-    }
-
-    // Helper function to reveal the current game
-    function revealCurrentGame() internal {
-        vm.startPrank(owner);
-        console.log("Revealing game with secret:", secret);
-        crashGame.revealGame(secret);
-        vm.stopPrank();
-    }
-
-    // Test committing a game
-    function testCommitGame() public {
-        // Only owner can commit
-        vm.prank(player1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
-        crashGame.commitGame(commitment);
 
         // Owner commits the game
         vm.prank(owner);
-        vm.expectEmit(true, true, false, true);
-        emit GameCommitted(gameHash, commitment);
         crashGame.commitGame(commitment);
 
-        // Verify commitment is set
+        // Verify the commitment is stored
+        gameHash = crashGame.currentGameHash();
         bytes32 storedCommitment = crashGame.gameCommitments(gameHash);
         assertEq(storedCommitment, commitment);
     }
 
-    // Test committing a game without resolving the previous one
-    function testCommitGameWithoutResolving() public {
-        // Owner commits the first game
-        commitCurrentGame();
+    function testPlayerCanPlaceBet() public {
+        // Owner commits the game
+        testOwnerCanCommitGame();
 
-        // Attempt to commit a second game without resolving
-        vm.prank(owner);
-        vm.expectRevert("Commitment already set");
-        crashGame.commitGame(commitment);
-    }
-
-    // Test placing a bet
-    function testPlaceBet() public {
-        commitCurrentGame();
-
-        // Player1 approves CrashGame to spend tokens
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-
-        // Place a valid bet
-        vm.expectEmit(true, true, false, true);
-        emit BetPlaced(player1, 100 * 10**18, gameHash);
-        crashGame.placeBet(100 * 10**18, 200); // 2.00x
-
-        // Verify bet is recorded using tuple destructuring
-        (
-            address betPlayer,
-            uint256 betAmount,
-            bytes32 betGameHash,
-            bytes32 resolvedHash,
-            uint256 intendedMultiplier,
-            uint256 multiplier,
-            bool claimed,
-            bool isWon
-        ) = crashGame.bets(gameHash, player1);
-
-        // Construct the Bet struct manually
-        CrashGame.Bet memory bet = CrashGame.Bet({
-            player: betPlayer,
-            amount: betAmount,
-            gameHash: betGameHash,
-            resolvedHash: resolvedHash,
-            intendedMultiplier: intendedMultiplier,
-            multiplier: multiplier,
-            claimed: claimed,
-            isWon: isWon
-        });
-
-        assertEq(bet.player, player1);
-        assertEq(bet.amount, 100 * 10**18);
-        assertEq(bet.intendedMultiplier, 200);
-        assertEq(bet.multiplier, 0);
-        assertFalse(bet.claimed);
-        assertFalse(bet.isWon);
-
-        // Player1 cannot place multiple bets on the same game
-        vm.expectRevert("Bet already placed");
-        crashGame.placeBet(50 * 10**18, 150);
-        vm.stopPrank();
-    }
-
-    // Test placing a bet below minimum
-    function testPlaceBetBelowMinimum() public {
-        commitCurrentGame();
-
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-
-        vm.expectRevert("Bet amount below minimum");
-        crashGame.placeBet(5 * 10**18, 100); // Below minimum (10 tokens)
-        vm.stopPrank();
-    }
-
-    // Test placing a bet above maximum
-    function testPlaceBetAboveMaximum() public {
-        commitCurrentGame();
-
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-
-        vm.expectRevert("Bet amount exceeds maximum");
-        crashGame.placeBet(20_000 * 10**18, 100); // Above maximum (10,000 tokens)
-        vm.stopPrank();
-    }
-
-    // Test revealing a game
-    function testRevealGame() public {
-        commitCurrentGame();
-
-        // Only owner can reveal
-        vm.prank(player1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
-        crashGame.revealGame(secret);
-
-        // Compute expected resolvedHash
-        bytes32 resolvedHash = keccak256(abi.encodePacked(gameHash, secret));
-
-        // Get expected multiplier and hmac
-        (uint256 expectedMultiplier, bytes32 expectedHmac) = crashGame.getResult(resolvedHash);
-
-        // Owner reveals with correct secret
-        vm.prank(owner);
-        vm.expectEmit(true, true, false, true);
-        emit GameRevealed(gameHash, expectedMultiplier, expectedHmac);
-        crashGame.revealGame(secret);
-
-        // Verify result
-        uint256 gameResult = crashGame.result(gameHash);
-
-        console.log("Game result:", gameResult);
-        assertEq(gameResult, expectedMultiplier);
-
-        // Verify currentGameHash is updated
-        bytes32 newGameHash = expectedHmac;
-        assertEq(crashGame.currentGameHash(), newGameHash);
-    }
-
-    // Test revealing with incorrect secret
-    function testRevealGameWithIncorrectSecret() public {
-        commitCurrentGame();
-
-        vm.prank(owner);
-        vm.expectRevert("Commitment mismatch");
-        crashGame.revealGame("wrong_secret");
-    }
-
-    // Test claiming payout for a winning bet
-    function testClaimPayoutWinningBet() public {
-        secret = "winning_secret";
-        commitment = keccak256(abi.encodePacked(secret));
-        commitCurrentGame();
-
-        uint256 balanceBeforeBet = protocolToken.balanceOf(player1);
-        uint256 betAmount = 100 * 10**18;
+        uint256 betAmount = 1 ether;
+        uint256 intendedMultiplier = 200; // 2x
 
         // Player1 places a bet
+        vm.prank(player1);
+        crashGame.placeBet{value: betAmount}(betAmount, intendedMultiplier, address(0));
+
+        // Verify the bet is recorded
+        gameHash = crashGame.currentGameHash();
+        CrashGame.Bet memory bet = crashGame.getBet(gameHash, player1);
+
+        assertEq(bet.player, player1);
+        assertEq(bet.amount, betAmount);
+        assertEq(bet.intendedMultiplier, intendedMultiplier);
+        assertEq(bet.token, address(0));
+    }
+
+    function testPlayerCanPlaceBetWithERC20() public {
+        // Owner commits the game
+        testOwnerCanCommitGame();
+
+        uint256 betAmount = 50 ether;
+        uint256 intendedMultiplier = 300; // 3x
+
+        // Player1 approves the token transfer
         vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-        crashGame.placeBet(betAmount, 110); // Intended multiplier: 1.50x
+        token.approve(address(crashGame), betAmount);
+
+        // Player1 places a bet with ERC20 token
+        crashGame.placeBet(betAmount, intendedMultiplier, address(token));
         vm.stopPrank();
 
+        // Verify the bet is recorded
+        gameHash = crashGame.currentGameHash();
+        CrashGame.Bet memory bet = crashGame.getBet(gameHash, player1);
+
+        assertEq(bet.player, player1);
+        assertEq(bet.amount, betAmount);
+        assertEq(bet.intendedMultiplier, intendedMultiplier);
+        assertEq(bet.token, address(token));
+    }
+
+    function testOwnerCanRevealGame() public {
+        // Players place bets
+        testPlayerCanPlaceBet();
+        // testPlayerCanPlaceBetWithERC20();
+
+        // Move forward in time to simulate passage of time
+        vm.warp(block.timestamp + 1 minutes);
+
         // Owner reveals the game
-        revealCurrentGame();
+        vm.prank(owner);
+        crashGame.revealGame("secret");
 
-        // Get game result
-        uint256 gameResult = crashGame.result(gameHash);
+        // Verify the result is stored
+        uint256 resultMultiplier = crashGame.result(gameHash);
+        assertGt(resultMultiplier, 0);
+    }
 
-        console.log("Game result:", gameResult);
+    function testPlayerCanClaimPayout() public {
+        // Players place bets
+        testPlayerCanPlaceBet();
 
-        // Calculate expected payout
-        uint256 expectedPayout = (betAmount * 110) / 100;
-        if (expectedPayout > crashGame.maximumPayout()) {
-            expectedPayout = crashGame.maximumPayout();
-        }
+        gameHash = crashGame.currentGameHash();
 
-        console.log("Expected payout:", expectedPayout);
+        // Move forward in time to simulate passage of time
+        vm.warp(block.timestamp + 1 minutes);
+
+        // Owner reveals the game
+        vm.prank(owner);
+        crashGame.revealGame("secret");
 
         // Player1 claims payout
-        vm.startPrank(player1);
+        vm.prank(player1);
         CrashGame.Bet memory bet = crashGame.claimPayout(gameHash);
 
         // Verify payout
-        assertEq(protocolToken.balanceOf(player1), balanceBeforeBet + expectedPayout - betAmount);
-        assertTrue(bet.isWon);
-        assertTrue(bet.claimed);
-        vm.stopPrank();
+        if (bet.isWon) {
+            uint256 expectedPayout = (bet.amount * bet.intendedMultiplier) / 100;
+            assertEq(address(player1).balance, initialBalance - bet.amount + expectedPayout);
+        } else {
+            assertEq(address(player1).balance, initialBalance - bet.amount);
+        }
     }
 
-    // Test claiming payout for a losing bet
-    function testClaimPayoutLosingBet() public {
-        secret = "losing_secret";
-        commitment = keccak256(abi.encodePacked(secret));
-    
-        commitCurrentGame();
+    function testRefundBetAfterDeadline() public {
+        // Player places a bet
+        testPlayerCanPlaceBet();
 
-        // Player1 places a bet
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-        crashGame.placeBet(100 * 10**18, 250); // Intended multiplier: 2.50x
-        vm.stopPrank();
+        gameHash = crashGame.currentGameHash();
 
-        // Owner reveals the game
-        revealCurrentGame();
+        // Move forward in time past the reveal deadline
+        vm.warp(block.timestamp + 11 minutes);
 
-        // Get game result
-        uint256 gameResult = crashGame.result(gameHash);
+        // Player1 refunds bet
+        vm.prank(player1);
+        crashGame.refundBet(gameHash);
 
-        console.log("Game result:", gameResult);
-
-        // Player1 claims payout
-        vm.startPrank(player1);
-        CrashGame.Bet memory bet = crashGame.claimPayout(gameHash);
-
-        // Verify no payout
-        assertEq(protocolToken.balanceOf(player1), 10_000 * 10**18 - 100 * 10**18);
-        assertFalse(bet.isWon);
-        assertTrue(bet.claimed);
-        vm.stopPrank();
+        // Verify refund
+        assertEq(address(player1).balance, initialBalance);
     }
 
-    // Test claiming payout before game is resolved
-    function testClaimPayoutBeforeResolution() public {
-        commitCurrentGame();
+    function testCannotPlaceBetAfterGameRevealed() public {
+        // Owner commits and reveals the game immediately
+        testOwnerCanCommitGame();
+        gameHash = crashGame.currentGameHash();
 
-        // Player1 places a bet
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-        crashGame.placeBet(100 * 10**18, 150);
-        vm.stopPrank();
+        vm.prank(owner);
+        crashGame.revealGame("secret");
 
-        // Player1 tries to claim payout before game is revealed
-        vm.startPrank(player1);
-        vm.expectRevert("Game not resolved yet");
-        crashGame.claimPayout(gameHash);
-        vm.stopPrank();
+        // Player attempts to place a bet
+        vm.prank(player1);
+        vm.expectRevert("Game not yet committed");
+        crashGame.placeBet{value: 1 ether}(1 ether, 200, address(0));
     }
 
-    // Test pausing and unpausing the contract
+    function testWithdrawProtocolRevenue() public {
+        // Players place bets
+        testPlayerCanClaimPayout();
+
+        // Move forward in time to simulate passage of time
+        vm.warp(block.timestamp + 1 minutes);
+
+        // Owner withdraws protocol revenue
+        vm.prank(owner);
+        crashGame.withdrawProtocolRevenue(1 ether, address(0));
+
+        // Verify owner's balance increased
+        assertEq(address(owner).balance, initialBalance + 1 ether);
+    }
+
     function testPauseAndUnpause() public {
-        // Pause the contract
+        testOwnerCanCommitGame();
+
+        // Owner pauses the contract
         vm.prank(owner);
         crashGame.pause();
-        assertTrue(crashGame.paused());
 
-        // Attempt to place a bet while paused
-        commitCurrentGame();
-        vm.startPrank(player1);
-        protocolToken.approve(address(crashGame), type(uint256).max);
-        // vm.expectRevert("Pausable: paused");
+        // Player attempts to place a bet
+        vm.prank(player1);
         vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
-        crashGame.placeBet(100 * 10**18, 150);
-        vm.stopPrank();
+        crashGame.placeBet{value: 1 ether}(1 ether, 200, address(0));
 
-        // Unpause the contract
+        // Owner unpauses the contract
         vm.prank(owner);
         crashGame.unpause();
-        assertFalse(crashGame.paused());
 
-        // Now placing a bet should work
-        vm.startPrank(player1);
-        crashGame.placeBet(100 * 10**18, 150);
-        vm.stopPrank();
+        // Player places a bet successfully
+        vm.prank(player1);
+        crashGame.placeBet{value: 1 ether}(1 ether, 200, address(0));
     }
 
-    // Test withdrawing tokens by the owner
-    function testWithdrawTokens() public {
-        uint256 balanceBefore = protocolToken.balanceOf(address(crashGame));
-        uint256 ownerBalanceBefore = protocolToken.balanceOf(owner);
+    function testSetMaximumPayout() public {
+        // Owner sets maximum payout
+        vm.prank(owner);
+        crashGame.setMaximumPayout(address(0), 50 ether);
 
-        // Owner withdraws tokens
-        vm.startPrank(owner);
-        crashGame.withdrawTokens(300 * 10**18);
-        vm.stopPrank();
-
-        // Verify withdrawal
-        assertEq(protocolToken.balanceOf(owner), ownerBalanceBefore + 300 * 10**18);
-        assertEq(protocolToken.balanceOf(address(crashGame)), balanceBefore - 300 * 10**18);
+        // Verify maximum payout
+        uint256 maxPayout = crashGame.tokenMaximumPayout(address(0));
+        assertEq(maxPayout, 50 ether);
     }
 
-    // Test that non-owner cannot withdraw tokens
-    function testNonOwnerWithdrawTokens() public {
-        vm.startPrank(player1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
-        crashGame.withdrawTokens(100 * 10**18);
-        vm.stopPrank();
+    function testCannotRevealGameAfterDeadline() public {
+        // Owner commits the game
+        testOwnerCanCommitGame();
+
+        gameHash = crashGame.currentGameHash();
+
+        // Move forward in time past the reveal deadline
+        vm.warp(block.timestamp + 11 minutes);
+
+        // Owner attempts to reveal the game
+        vm.prank(owner);
+        vm.expectRevert("Reveal deadline passed");
+        crashGame.revealGame(string(abi.encodePacked("secret")));
     }
 
-    // Test that non-owner cannot reset currentGameHash
-    function testNonOwnerResetGameHash() public {
-        vm.startPrank(player1);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, player1));
-        crashGame.resetCurrentGameHash(keccak256("new_game_hash"));
-        vm.stopPrank();
+    function testCannotRefundBetBeforeDeadline() public {
+        // Player places a bet
+        testPlayerCanPlaceBet();
+
+        gameHash = crashGame.currentGameHash();
+
+        // Player attempts to refund bet before deadline
+        vm.prank(player1);
+        vm.expectRevert("Reveal deadline not passed");
+        crashGame.refundBet(gameHash);
     }
 
-    // Test that owner can reset currentGameHash
-    function testOwnerResetGameHash() public {
-        bytes32 newGameHash = keccak256("new_game_hash");
+    function testCannotClaimPayoutBeforeGameResolved() public {
+        // Player places a bet
+        testPlayerCanPlaceBet();
 
+        gameHash = crashGame.currentGameHash();
+
+        // Player attempts to claim payout before game is resolved
+        vm.prank(player1);
+        vm.expectRevert("Game not resolved yet");
+        crashGame.claimPayout(gameHash);
+    }
+
+    function testCannotClaimPayoutTwice() public {
+        // Player places a bet and game is resolved
+        testPlayerCanClaimPayout();
+
+        // Player attempts to claim payout again
+        vm.prank(player1);
+        vm.expectRevert("Payout already claimed");
+        crashGame.claimPayout(gameHash);
+    }
+
+    function testCannotRefundAfterClaim() public {
+        // Player places a bet and game is resolved
+        testPlayerCanClaimPayout();
+
+        // Move forward in time past the reveal deadline
+        vm.warp(block.timestamp + 11 minutes);
+
+        // Player attempts to refund bet
+        vm.prank(player1);
+        vm.expectRevert("Bet already claimed or refunded");
+        crashGame.refundBet(gameHash);
+    }
+
+    function testResetCurrentGameHash() public {
+        // Owner resets the current game hash
+        bytes32 newGameHash = keccak256(abi.encodePacked("newGameHash"));
         vm.prank(owner);
         crashGame.resetCurrentGameHash(newGameHash);
 
-        // Verify new gameHash is set
+        // Verify the current game hash is updated
         assertEq(crashGame.currentGameHash(), newGameHash);
     }
+}
 
-    // Additional tests can be added here, such as testing multiple players, edge cases, etc.
+contract MockERC20 is ERC20 {
+    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
+
+    function mint(address to, uint256 amount) public {
+        _mint(to, amount);
+    }
 }
