@@ -219,7 +219,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         for (uint256 i = 0; i < participants[gameHash].length; i++) {
             address player = participants[gameHash][i];
             Bet storage bet = bets[gameHash][player];
-            if (bet.amount > 0 && !bet.claimed) {
+            if (bet.amount > 0) {
                 payout(bet);
             }
         }
@@ -246,50 +246,50 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
 
     /// @dev Allows users to claim their payout after the bet is resolved and they have won.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
-    function claimPayout(bytes32 gameHash) external nonReentrant whenNotPaused returns (Bet memory) {
+    function claimPayout(bytes32 gameHash) external nonReentrant whenNotPaused returns (Bet memory betData) {
         Bet storage bet = bets[gameHash][msg.sender];
         require(bet.player == msg.sender, "Not your bet");
         require(!bet.claimed, "Payout already claimed");
         require(result[gameHash] > 0, "Game not resolved yet");
 
         payout(bet);
-
-        Bet memory betData = bet;
-        return betData;
+        betData = bet;
     }
 
     /// @dev Internal function to handle the payout logic for a specific bet.
     /// @param bet The Bet struct representing the player's bet.
     function payout(Bet storage bet) internal {
-        if (result[bet.gameHash] >= bet.intendedMultiplier) {
-            uint256 maximumPayoutAdjusted = tokenMaximumPayout[bet.token];
-            uint256 payoutAmount = bet.amount * bet.intendedMultiplier / 100;
-            if (payoutAmount > maximumPayoutAdjusted) {
-                payoutAmount = maximumPayoutAdjusted;
-            }
+        if (!bet.claimed) {
+            if (result[bet.gameHash] >= bet.intendedMultiplier) {
+                uint256 maximumPayoutAdjusted = tokenMaximumPayout[bet.token];
+                uint256 payoutAmount = bet.amount * bet.intendedMultiplier / 100;
+                if (payoutAmount > maximumPayoutAdjusted) {
+                    payoutAmount = maximumPayoutAdjusted;
+                }
 
-            bet.claimed = true;
-            bet.isWon = true;
-            bet.multiplier = result[bet.gameHash];
-            bet.resolvedHash = resolvedHashes[bet.gameHash];
-            userWinnings[bet.token] += payoutAmount;
+                bet.claimed = true;
+                bet.isWon = true;
+                bet.multiplier = result[bet.gameHash];
+                bet.resolvedHash = resolvedHashes[bet.gameHash];
+                userWinnings[bet.token] += payoutAmount;
 
-            if (bet.token == address(0)) {
-                (bool success, ) = msg.sender.call{value: payoutAmount}("");
-                require(success, "Failed to send Ether");
+                if (bet.token == address(0)) {
+                    (bool success, ) = msg.sender.call{value: payoutAmount}("");
+                    require(success, "Failed to send Ether");
+                } else {
+                    require(IERC20(bet.token).balanceOf(address(this)) >= payoutAmount, "Insufficient contract token balance");
+                    IERC20(bet.token).safeTransfer(msg.sender, payoutAmount);
+                }
+
+                emit Payout(msg.sender, payoutAmount, bet.gameHash);
             } else {
-                require(IERC20(bet.token).balanceOf(address(this)) >= payoutAmount, "Insufficient contract token balance");
-                IERC20(bet.token).safeTransfer(msg.sender, payoutAmount);
+                // Mark the bet as resolved but not won
+                bet.claimed = true;
+                bet.isWon = false;
+                bet.multiplier = result[bet.gameHash];
+                bet.resolvedHash = resolvedHashes[bet.gameHash];
+                userLosses[bet.token] += bet.amount;
             }
-
-            emit Payout(msg.sender, payoutAmount, bet.gameHash);
-        } else {
-            // Mark the bet as resolved but not won
-            bet.claimed = true;
-            bet.isWon = false;
-            bet.multiplier = result[bet.gameHash];
-            bet.resolvedHash = resolvedHashes[bet.gameHash];
-            userLosses[bet.token] += bet.amount;
         }
     }
 
