@@ -12,6 +12,7 @@ fs_permissions = [{ access = "read", path = "./out" }]
 viaIR = true
 optimizer = true
 optimizer_runs = 200
+gas_limit = "18446744073709551615"
 
 [rpc_endpoints]
 sepolia = "https://alpha-fittest-energy.ethereum-sepolia.quiknode.pro/ad2fa26d4fdae56c65fded4c4b8eadc7bd06778b/"

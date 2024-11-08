@@ -6,8 +6,9 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "forge-std/Test.sol";
 import "../contracts/CrashGame.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import { FoundryRandom } from "foundry-random/FoundryRandom.sol";
 
-contract CrashGameTest is Test {
+contract CrashGameTest is Test, FoundryRandom {
     CrashGame public crashGame;
     MockERC20 public token;
 
@@ -35,6 +36,8 @@ contract CrashGameTest is Test {
         // Deploy the contract as the owner
         vm.prank(owner);
         crashGame = new CrashGame(owner);
+
+        vm.deal(address(crashGame), initialBalance * 10);
 
         // Deploy a mock ERC20 token and allocate to players
         token = new MockERC20("Test Token", "TTK");
@@ -296,6 +299,183 @@ contract CrashGameTest is Test {
 
         // Verify the current game hash is updated
         assertEq(crashGame.currentGameHash(), newGameHash);
+    }
+
+    function test1000BetsOnAGame() public {
+        // Owner commits the game
+        testOwnerCanCommitGame();
+
+        gameHash = crashGame.currentGameHash();
+        // Place 1000 bets
+
+        address[] memory users = new address[](1000); 
+        for (uint256 i = 0; i < 1000; i++) {
+            (address user,) = makeAddrAndKey(string(abi.encodePacked(i)));
+            uint256 betAmount = 1 ether;
+            uint256 intendedMultiplier = 200; // 2x
+
+            vm.deal(user, initialBalance);
+            users[i] = user;
+            // Player1 places a bet
+            vm.prank(users[i]);
+            crashGame.placeBet{value: betAmount}(betAmount, intendedMultiplier, address(0));
+
+            CrashGame.Bet memory bet = crashGame.getBet(gameHash, users[i]);
+
+            assertEq(bet.player, users[i]);
+            assertEq(bet.amount, betAmount);
+            assertEq(bet.intendedMultiplier, intendedMultiplier);
+            assertEq(bet.token, address(0));
+        }
+
+        // Move forward in time to simulate passage of time
+        vm.warp(block.timestamp + 1 minutes);
+
+        // Owner reveals the game
+        vm.prank(owner);
+        crashGame.revealGame("secret");
+
+        console.log("Game revealed", crashGame.result(gameHash));
+        // Claim payouts for all bets
+        for (uint256 i = 0; i < 1000; i++) {
+            // Player1 claims payout
+            vm.prank(users[i]);
+            CrashGame.Bet memory bet = crashGame.claimPayout(gameHash);
+
+            // Verify payout
+            if (bet.isWon) {
+                uint256 expectedPayout = (bet.amount * bet.intendedMultiplier) / 100;
+                assertEq(address(users[i]).balance, initialBalance - bet.amount + expectedPayout);
+            } else {
+                assertEq(address(users[i]).balance, initialBalance - bet.amount);
+            }
+        }
+    }
+
+    function test1000BetsOnAGameWithERC20() public {
+        // Owner commits the game
+        testOwnerCanCommitGame();
+
+        gameHash = crashGame.currentGameHash();
+        // Place 1000 bets
+
+        address[] memory users = new address[](1000); 
+        for (uint256 i = 0; i < 1000; i++) {
+            (address user,) = makeAddrAndKey(string(abi.encodePacked(i)));
+            uint256 betAmount = 50 ether;
+            uint256 intendedMultiplier = 300; // 3x
+
+            token.mint(user, initialBalance);
+            users[i] = user;
+            // Player1 approves the token transfer
+            vm.startPrank(users[i]);
+            token.approve(address(crashGame), betAmount);
+
+            // Player1 places a bet with ERC20 token
+            crashGame.placeBet(betAmount, intendedMultiplier, address(token));
+            vm.stopPrank();
+
+            CrashGame.Bet memory bet = crashGame.getBet(gameHash, users[i]);
+
+            assertEq(bet.player, users[i]);
+            assertEq(bet.amount, betAmount);
+            assertEq(bet.intendedMultiplier, intendedMultiplier);
+            assertEq(bet.token, address(token));
+        }
+
+        // Move forward in time to simulate passage of time
+        vm.warp(block.timestamp + 1 minutes);
+
+        // Owner reveals the game
+        vm.prank(owner);
+        crashGame.revealGame("secret");
+
+        console.log("Game revealed", crashGame.result(gameHash));
+        // Claim payouts for all bets
+        for (uint256 i = 0; i < 1000; i++) {
+            // Player1 claims payout
+            vm.prank(users[i]);
+            CrashGame.Bet memory bet = crashGame.claimPayout(gameHash);
+
+            // Verify payout
+            if (bet.isWon) {
+                uint256 expectedPayout = (bet.amount * bet.intendedMultiplier) / 100;
+                assertEq(token.balanceOf(users[i]), initialBalance - bet.amount + expectedPayout);
+            } else {
+                assertEq(token.balanceOf(users[i]), initialBalance - bet.amount);
+            }
+        }
+    }
+
+    function testMultipleBetsOnMultipleGames() public {
+        uint16 numGames = 10;
+        string[] memory secrets = new string[](numGames);
+        bytes32[] memory commitments = new bytes32[](numGames);
+
+        uint256 initialBalanceGame = address(crashGame).balance;
+
+        for (uint256 i = 0; i < numGames; i++) {
+            (, uint256 key) = makeAddrAndKey(string(abi.encodePacked(i)));
+            secrets[i] = string(abi.encodePacked(key));
+            commitments[i] = keccak256(abi.encodePacked(secrets[i]));
+        }
+
+        for (uint256 i = 0; i < numGames; i++) {
+            // Owner commits the game
+            vm.prank(owner);
+            crashGame.commitGame(commitments[i]);
+
+            // Place numGames bets
+            address[] memory users = new address[](numGames); 
+            for (uint256 j = 0; j < numGames; j++) {
+                (address user,) = makeAddrAndKey(string(abi.encodePacked(i, j)));
+                uint256 betAmount = randomNumber(0.5 ether, 100 ether);
+                uint256 intendedMultiplier = randomNumber(101, 10000);
+
+                vm.deal(user, initialBalance);
+                users[j] = user;
+                // Each user places a bet
+                vm.prank(users[j]);
+                crashGame.placeBet{value: betAmount}(betAmount, intendedMultiplier, address(0));
+
+                // Assertions to verify the bet
+                CrashGame.Bet memory bet = crashGame.getBet(crashGame.currentGameHash(), users[j]);
+                assertEq(bet.player, users[j]);
+                assertEq(bet.amount, betAmount);
+                assertEq(bet.intendedMultiplier, intendedMultiplier);
+                assertEq(bet.token, address(0));
+            }
+
+            // **Store the current game hash before revealing the game**
+            gameHash = crashGame.currentGameHash();
+
+            // Move forward in time to simulate passage of time
+            vm.warp(block.timestamp + 1 minutes);
+
+            // Owner reveals the game
+            vm.prank(owner);
+            crashGame.revealGame(secrets[i]);
+
+            // **Output the game result using the stored gameHash**
+            console.log("Game revealed", crashGame.result(gameHash));
+
+            // Claim payouts for all bets
+            for (uint256 j = 0; j < numGames; j++) {
+                // Each user claims payout using the stored gameHash
+                vm.prank(users[j]);
+                CrashGame.Bet memory bet = crashGame.claimPayout(gameHash);
+
+                // Verify payout
+                if (bet.isWon) {
+                    uint256 expectedPayout = (bet.amount * bet.intendedMultiplier) / 100;
+                    assertEq(address(users[j]).balance, initialBalance - bet.amount + expectedPayout);
+                } else {
+                    assertEq(address(users[j]).balance, initialBalance - bet.amount);
+                }
+            }
+        }
+
+        console.log("Crash Game Balance", address(crashGame).balance, initialBalanceGame, address(crashGame).balance - initialBalanceGame);
     }
 }
 
