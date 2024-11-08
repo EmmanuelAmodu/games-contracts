@@ -46,7 +46,7 @@ contract CrashGameTest is Test, FoundryRandom {
 
         // Set maximum payout for the token
         vm.prank(owner);
-        crashGame.setMaximumPayout(address(token), 1000 ether);
+        crashGame.setWhitelistToken(address(token), 1000 ether, 1 ether);
     }
 
     function testOwnerCanCommitGame() public {
@@ -219,10 +219,10 @@ contract CrashGameTest is Test, FoundryRandom {
         crashGame.placeBet{value: 1 ether}(1 ether, 200, address(0));
     }
 
-    function testSetMaximumPayout() public {
+    function testSetWhitelistToken() public {
         // Owner sets maximum payout
         vm.prank(owner);
-        crashGame.setMaximumPayout(address(0), 50 ether);
+        crashGame.setWhitelistToken(address(0), 50 ether, 1 ether);
 
         // Verify maximum payout
         uint256 maxPayout = crashGame.tokenMaximumPayout(address(0));
@@ -350,6 +350,46 @@ contract CrashGameTest is Test, FoundryRandom {
                 assertEq(address(users[i]).balance, initialBalance - bet.amount);
             }
         }
+    }
+
+    function test1000BetsOnAGameWithPayout() public {
+        // Owner commits the game
+        testOwnerCanCommitGame();
+
+        gameHash = crashGame.currentGameHash();
+        // Place 1000 bets
+
+        address[] memory users = new address[](1000); 
+        for (uint256 i = 0; i < 1000; i++) {
+            (address user,) = makeAddrAndKey(string(abi.encodePacked(i)));
+            uint256 betAmount = 1 ether;
+            uint256 intendedMultiplier = 200; // 2x
+
+            vm.deal(user, initialBalance);
+            users[i] = user;
+            // Player1 places a bet
+            vm.prank(users[i]);
+            crashGame.placeBet{value: betAmount}(betAmount, intendedMultiplier, address(0));
+
+            CrashGame.Bet memory bet = crashGame.getBet(gameHash, users[i]);
+
+            assertEq(bet.player, users[i]);
+            assertEq(bet.amount, betAmount);
+            assertEq(bet.intendedMultiplier, intendedMultiplier);
+            assertEq(bet.token, address(0));
+        }
+
+        // Move forward in time to simulate passage of time
+        vm.warp(block.timestamp + 1 minutes);
+
+        // Owner reveals the game
+        vm.prank(owner);
+        crashGame.revealGame("secret");
+
+        vm.prank(owner);
+        crashGame.payWinningBets(gameHash);
+
+        console.log("Game revealed", crashGame.result(gameHash));
     }
 
     function test1000BetsOnAGameWithERC20() public {

@@ -25,10 +25,22 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         bool isWon;
     }
 
+    // Mapping from token address to maximum payout amount
     mapping(address => uint256) public tokenMaximumPayout;
 
+    // Mapping from token address to maximum bet amount
+    mapping(address => uint256) public tokenMaximumBet;
+
+    // Mapping from token address to minimum bet amount
+    mapping(address => uint256) public tokenMinimumBet;
+
+    // Mapping from token address to supported status
+    mapping(address => bool) public tokenSupported;
+
+    // Mapping from token address to user winnings
     mapping(address => uint256) private userWinnings;
 
+    // Mapping from token address to user losses
     mapping(address => uint256) private userLosses;
 
     // Mapping from game hash to player bets
@@ -52,9 +64,13 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     // Current game hash
     bytes32 public currentGameHash;
 
+    // max multiplier
     uint256 public constant MAX_INTENDED_MULTIPLIER = 10000; // Represents 100x
 
+    // Mapping from gameHash to reveal deadline
     mapping(bytes32 => uint256) public revealDeadline;
+
+    // Constant time window for revealing the game
     uint256 public constant REVEAL_TIME_WINDOW = 10 minutes;
 
     // Events
@@ -72,6 +88,9 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         gameHashes.push(currentGameHash);
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
         tokenMaximumPayout[address(0)] = 10 ether;
+        tokenMaximumBet[address(0)] = 1 ether;
+        tokenMinimumBet[address(0)] = 0.01 ether;
+        tokenSupported[address(0)] = true;
     }
 
     /// @notice Pause the contract, disabling certain functions.
@@ -105,7 +124,10 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         require(currentGameHash != bytes32(0), "No game committed");
         require(gameCommitments[currentGameHash] != bytes32(0), "Game not yet committed");
         require(tokenMaximumPayout[token] > 0, "Token not supported");
-        require(intendedMultiplier > 100, "multiplier must be greater then 1");
+        require(intendedMultiplier > 100, "multiplier must be greater than 1");
+        require(amount >= tokenMinimumBet[token], "Bet amount is less than minimum bet");
+        require(amount <= tokenMaximumBet[token], "Bet amount exceeds maximum bet");
+        require(tokenSupported[token], "Token not supported");
         require(intendedMultiplier <= MAX_INTENDED_MULTIPLIER, "multiplier must be less then 100");
 
         if (token == address(0)) {
@@ -115,11 +137,11 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
             // Transfer tokens from the player to the contract
             IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         }
-        
+
         // Record the bet with the current gameHash
         Bet storage existingBet = bets[currentGameHash][msg.sender];
         require(existingBet.player == address(0), "Bet already placed");
-        
+
         bets[currentGameHash][msg.sender] = Bet({
             player: msg.sender,
             amount: amount,
@@ -191,6 +213,18 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
     }
 
+    /// @dev Pays out the winning bets for the current game.
+    /// @param gameHash The unique game-specific hash used as the HMAC key.
+    function payWinningBets(bytes32 gameHash) external onlyOwner whenNotPaused {
+        for (uint256 i = 0; i < participants[gameHash].length; i++) {
+            address player = participants[gameHash][i];
+            Bet storage bet = bets[gameHash][player];
+            if (bet.amount > 0 && !bet.claimed) {
+                payout(bet);
+            }
+        }
+    }
+
     /// @dev Allows users to refund their bet after the reveal deadline has passed.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
     function refundBet(bytes32 gameHash) external nonReentrant whenNotPaused {
@@ -218,39 +252,45 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         require(!bet.claimed, "Payout already claimed");
         require(result[gameHash] > 0, "Game not resolved yet");
 
-        if (result[gameHash] >= bet.intendedMultiplier) {
+        payout(bet);
+
+        Bet memory betData = bet;
+        return betData;
+    }
+
+    /// @dev Internal function to handle the payout logic for a specific bet.
+    /// @param bet The Bet struct representing the player's bet.
+    function payout(Bet storage bet) internal {
+        if (result[bet.gameHash] >= bet.intendedMultiplier) {
             uint256 maximumPayoutAdjusted = tokenMaximumPayout[bet.token];
-            uint256 payout = bet.amount * bet.intendedMultiplier / 100;
-            if (payout > maximumPayoutAdjusted) {
-                payout = maximumPayoutAdjusted;
+            uint256 payoutAmount = bet.amount * bet.intendedMultiplier / 100;
+            if (payoutAmount > maximumPayoutAdjusted) {
+                payoutAmount = maximumPayoutAdjusted;
             }
 
             bet.claimed = true;
             bet.isWon = true;
-            bet.multiplier = result[gameHash];
-            bet.resolvedHash = resolvedHashes[gameHash];
-            userWinnings[bet.token] += payout;
+            bet.multiplier = result[bet.gameHash];
+            bet.resolvedHash = resolvedHashes[bet.gameHash];
+            userWinnings[bet.token] += payoutAmount;
 
             if (bet.token == address(0)) {
-                (bool success, ) = msg.sender.call{value: payout}("");
+                (bool success, ) = msg.sender.call{value: payoutAmount}("");
                 require(success, "Failed to send Ether");
             } else {
-                require(IERC20(bet.token).balanceOf(address(this)) >= payout, "Insufficient contract token balance");
-                IERC20(bet.token).safeTransfer(msg.sender, payout);
+                require(IERC20(bet.token).balanceOf(address(this)) >= payoutAmount, "Insufficient contract token balance");
+                IERC20(bet.token).safeTransfer(msg.sender, payoutAmount);
             }
 
-            emit Payout(msg.sender, payout, gameHash);
+            emit Payout(msg.sender, payoutAmount, bet.gameHash);
         } else {
             // Mark the bet as resolved but not won
             bet.claimed = true;
             bet.isWon = false;
-            bet.multiplier = result[gameHash];
-            bet.resolvedHash = resolvedHashes[gameHash];
+            bet.multiplier = result[bet.gameHash];
+            bet.resolvedHash = resolvedHashes[bet.gameHash];
             userLosses[bet.token] += bet.amount;
         }
-
-        Bet memory betData = bet;
-        return betData;
     }
 
     /// @dev Computes the crash multiplier based on the provided secure game hash.
@@ -365,10 +405,21 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     /// @dev Allows the owner to set the maximum payout multiplier.
     /// @param token The address of the token to set the maximum payout for.
     /// @param _maximumPayout The new maximum payout multiplier.
-    function setMaximumPayout(address token, uint256 _maximumPayout) external onlyOwner {
+    /// @param _maximumPayout The new maximum payout multiplier.
+    function setWhitelistToken(address token, uint256 _maximumPayout, uint256 _minimumBetAmount) external onlyOwner {
+        require(_maximumPayout > 0, "Invalid maximum payout");
         tokenMaximumPayout[token] = _maximumPayout;
+        tokenMinimumBet[token] = _minimumBetAmount;
+        tokenMaximumBet[token] = _maximumPayout / 10;
+        tokenSupported[token] = true;
     }
-    
+
+    /// @dev Allows the owner to remove a token from the whitelist.
+    /// @param token The address of the token to remove from the whitelist.
+    function removeWhitelistToken(address token) external onlyOwner {
+        tokenSupported[token] = false;
+    }
+
     /// @dev function to accept Ether.
     receive() external payable {}
 }
