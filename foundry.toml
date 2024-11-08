@@ -19,6 +19,8 @@ sepolia = "https://alpha-fittest-energy.ethereum-sepolia.quiknode.pro/ad2fa26d4f
 mainnet = "https://greatest-icy-rain.quiknode.pro/39f79e4968518a7d0519a3638f730848fc4663c2/"
 base = "https://sly-damp-road.base-mainnet.quiknode.pro/7be795a85e70d1d223b6576b7b589970ab612649/"
 base-sepolia = "https://silent-thrilling-sea.base-sepolia.quiknode.pro/99f3a182ebb5acb7e0273692e76914b835b04e82/"
+lisk-sepolia = "https://rpc.sepolia-api.lisk.com"
+lisk = "https://rpc.api.lisk.com"
 
 [etherscan]
 mainnet = { key = "1XAWBCQYA7MDDYWPE6DE6VB14JY2GE2FF6", url = "https://api.etherscan.io/api" }
