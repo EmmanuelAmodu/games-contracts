@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL
 pragma solidity ^0.8.17;
 
 // Import OpenZeppelin contracts for security and access control
@@ -8,7 +8,14 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @title On-Chain Crash Game with ERC20 and Commit-Reveal Scheme
+/// @title On-Chain Crash Game with Commit-Reveal Scheme
+/// @notice This contract implements a simple on-chain crash game with a commit-reveal scheme.
+///         Players can place bets on the game by specifying the amount and intended multiplier.
+///         The game owner can commit to a new game's secret by providing a commitment hash.
+///         After the reveal deadline has passed, the owner can reveal the secret to resolve the game.
+///         Players can claim their payout if they win.
+///         The contract owner can withdraw protocol revenue and set the maximum payout multiplier.
+/// @dev This contract is for educational purposes only and has not been audited.
 contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
@@ -103,7 +110,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         _unpause();
     }
 
-    /// @dev Allows the owner to commit to a new game's secret by providing a commitment hash.
+    /// @notice Allows the owner to commit to a new game's secret by providing a commitment hash.
     /// @param commitment The hash of the secret (e.g., keccak256(abi.encodePacked(secret))).
     function commitGame(bytes32 commitment) external onlyOwner {
         require(currentGameHash != bytes32(0), "Previous game not resolved");
@@ -116,7 +123,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         emit GameCommitted(currentGameHash, commitment);
     }
 
-    /// @dev Allows a player to place a bet on the current committed game.
+    /// @notice Allows a player to place a bet on the current committed game.
     /// @param amount The amount of protocol tokens to bet.
     /// @param intendedMultiplier The multiplier the player aims to achieve.
     /// @param token The address of the token to use for betting.
@@ -158,7 +165,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         emit BetPlaced(msg.sender, amount, currentGameHash);
     }
 
-    /// @dev Returns the bets placed by all players for a specific game.
+    /// @notice Returns the bets placed by all players for a specific game.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
     /// @param start The start index of the bets array.
     /// @param end The end index of the bets array.
@@ -174,7 +181,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         return playerBets;
     }
 
-    /// @dev Returns the bet placed by a specific player for a specific game.
+    /// @notice Returns the bet placed by a specific player for a specific game.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
     /// @param player The address of the player who placed the bet.
     /// @return bet A Bet struct representing the bet placed by the player.
@@ -182,7 +189,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         return bets[gameHash][player];
     }
 
-    /// @dev Allows the owner to reveal the secret for the current gameHash.
+    /// @notice Allows the owner to reveal the secret for the current gameHash.
     /// @param secret The secret value used to generate the commitment.
     function revealGame(string memory secret) external onlyOwner whenNotPaused {
         require(currentGameHash != bytes32(0), "No active game");
@@ -213,7 +220,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         gameCommitments[currentGameHash] = bytes32(0); // No commitment yet
     }
 
-    /// @dev Pays out the winning bets for the current game.
+    /// @notice Pays out the winning bets for the current game.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
     function payWinningBets(bytes32 gameHash) external onlyOwner whenNotPaused {
         for (uint256 i = 0; i < participants[gameHash].length; i++) {
@@ -225,7 +232,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @dev Allows users to refund their bet after the reveal deadline has passed.
+    /// @notice Allows users to refund their bet after the reveal deadline has passed.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
     function refundBet(bytes32 gameHash) external nonReentrant whenNotPaused {
         require(block.timestamp > revealDeadline[gameHash], "Reveal deadline not passed");
@@ -244,7 +251,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         emit Refunded(msg.sender, bet.amount, gameHash);
     }
 
-    /// @dev Allows users to claim their payout after the bet is resolved and they have won.
+    /// @notice Allows users to claim their payout after the bet is resolved and they have won.
     /// @param gameHash The unique game-specific hash used as the HMAC key.
     function claimPayout(bytes32 gameHash) external nonReentrant whenNotPaused returns (Bet memory betData) {
         Bet storage bet = bets[gameHash][msg.sender];
@@ -256,7 +263,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         betData = bet;
     }
 
-    /// @dev Internal function to handle the payout logic for a specific bet.
+    /// @notice Internal function to handle the payout logic for a specific bet.
     /// @param bet The Bet struct representing the player's bet.
     function payout(Bet storage bet) internal {
         if (!bet.claimed) {
@@ -293,7 +300,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @dev Computes the crash multiplier based on the provided secure game hash.
+    /// @notice Computes the crash multiplier based on the provided secure game hash.
     /// @param secureGameHash The secure game-specific hash used as the HMAC key.
     /// @return multiplier The crash multiplier scaled by 100 (e.g., 250 represents 2.50x).
     /// @return hmac The HMAC-SHA256 hash used for verification.
@@ -328,7 +335,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         multiplier = numerator / denominator;
     }
 
-    /// @dev Implements HMAC-SHA256 as per RFC 2104.
+    /// @notice Implements HMAC-SHA256 as per RFC 2104.
     /// @param key The secret key for HMAC.
     /// @param message The message to hash.
     /// @return hmac The resulting HMAC-SHA256 hash.
@@ -371,7 +378,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         hmac = sha256(outerData);
     }
     
-    /// @dev Allows the contract owner to withdraw protocol tokens from the contract.
+    /// @notice Allows the contract owner to withdraw protocol tokens from the contract.
     /// @param amount The amount of tokens to withdraw.
     function withdrawProtocolRevenue(uint256 amount, address token) external onlyOwner nonReentrant whenNotPaused {
         require(amount > 0, "Invalid amount");
@@ -388,7 +395,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @dev Allows the owner to reset the current gameHash manually.
+    /// @notice Allows the owner to reset the current gameHash manually.
     ///      Useful in case of emergencies or to handle specific scenarios.
     /// @param newGameHash The new game hash to set.
     function resetCurrentGameHash(bytes32 newGameHash) external onlyOwner whenNotPaused {
@@ -402,7 +409,7 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         emit GameHashReset(currentGameHash, newGameHash);
     }
 
-    /// @dev Allows the owner to set the maximum payout multiplier.
+    /// @notice Allows the owner to set the maximum payout multiplier.
     /// @param token The address of the token to set the maximum payout for.
     /// @param _maximumPayout The new maximum payout multiplier.
     /// @param _maximumPayout The new maximum payout multiplier.
@@ -414,12 +421,12 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
         tokenSupported[token] = true;
     }
 
-    /// @dev Allows the owner to remove a token from the whitelist.
+    /// @notice Allows the owner to remove a token from the whitelist.
     /// @param token The address of the token to remove from the whitelist.
     function removeWhitelistToken(address token) external onlyOwner {
         tokenSupported[token] = false;
     }
 
-    /// @dev function to accept Ether.
+    /// @notice function to accept Ether.
     receive() external payable {}
 }
