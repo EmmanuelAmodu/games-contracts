@@ -2,11 +2,12 @@
 pragma solidity ^0.8.17;
 
 // Import OpenZeppelin contracts for security and access control
-import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /// @title On-Chain Crash Game with Commit-Reveal Scheme
 /// @notice This contract implements a simple on-chain crash game with a commit-reveal scheme.
@@ -16,7 +17,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 ///         Players can claim their payout if they win.
 ///         The contract owner can withdraw protocol revenue and set the maximum payout multiplier.
 /// @dev This contract is for educational purposes only and has not been audited.
-contract CrashGame is Ownable, ReentrancyGuard, Pausable {
+contract CrashGame is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
     using SafeERC20 for IERC20;
 
     // Struct to store player bets
@@ -88,8 +89,10 @@ contract CrashGame is Ownable, ReentrancyGuard, Pausable {
     event GameRevealed(bytes32 indexed gameHash, uint256 multiplier, bytes32 hmac);
     event GameHashReset(bytes32 prevGameHash, bytes32 newGameHash);
 
-    // Constructor to set the contract deployer as the owner and initialize parameters
-    constructor(address initialOwner) Ownable(initialOwner) {
+    /// @notice Initialize the contract with the owner address.
+    /// @param initialOwner The address of the owner of the contract.
+    function initialize(address initialOwner) public initializer {
+        __Ownable_init(initialOwner);
         // Initialize the first game hash with a unique and unpredictable value
         currentGameHash = keccak256(abi.encodePacked(block.timestamp, block.prevrandao, block.number));
         gameHashes.push(currentGameHash);

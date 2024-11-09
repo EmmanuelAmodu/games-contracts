@@ -35,7 +35,8 @@ contract CrashGameTest is Test, FoundryRandom {
 
         // Deploy the contract as the owner
         vm.prank(owner);
-        crashGame = new CrashGame(owner);
+        crashGame = new CrashGame();
+        crashGame.initialize(owner);
 
         vm.deal(address(crashGame), initialBalance * 10);
 
