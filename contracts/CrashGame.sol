@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL
+// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.17;
 
 // Import OpenZeppelin contracts for security and access control
