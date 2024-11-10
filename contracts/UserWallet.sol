@@ -13,6 +13,9 @@ contract UserWallet {
     // Nonce to prevent replay attacks
     uint256 public nonce;
 
+    // Allowed contracts
+    mapping(address => bool) public allowedContracts;
+
     // Events
     event Deposited(address indexed token, uint256 amount);
     event Withdrawn(address indexed token, uint256 amount);
@@ -20,6 +23,11 @@ contract UserWallet {
 
     modifier onlyRelayer() {
         require(msg.sender == relayer, "Not authorized");
+        _;
+    }
+
+    modifier onlyAllowedContract(address _contract) {
+        require(allowedContracts[_contract], "Contract not allowed");
         _;
     }
 
@@ -53,7 +61,7 @@ contract UserWallet {
         bytes calldata data,
         uint256 _nonce,
         bytes calldata signature
-    ) external payable onlyRelayer {
+    ) external payable onlyRelayer onlyAllowedContract(to) {
         require(_nonce == nonce, "Invalid nonce");
         nonce++;
 
@@ -145,5 +153,19 @@ contract UserWallet {
             s := calldataload(add(sig.offset, 32))
             v := byte(0, calldataload(add(sig.offset, 64)))
         }
+    }
+
+    /// @notice Allows
+    function setAllowedContract(address _contract, bool _allowed) external {
+        require(msg.sender == owner, "Not the owner");
+        allowedContracts[_contract] = _allowed;
+    }
+
+    /// @notice Allows the owner to change the relayer
+    /// @param _newRelayer The new relayer address
+    function setRelayer(address _newRelayer) external {
+        require(msg.sender == owner, "Not the owner");
+        require(_newRelayer != address(0), "Invalid address");
+        relayer = _newRelayer;
     }
 }
