@@ -93,6 +93,8 @@ contract CrashGame is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradea
     /// @param initialOwner The address of the owner of the contract.
     function initialize(address initialOwner) public initializer {
         __Ownable_init(initialOwner);
+        __ReentrancyGuard_init();
+        __Pausable_init();
         // Initialize the first game hash with a unique and unpredictable value
         currentGameHash = keccak256(abi.encodePacked(block.timestamp, block.prevrandao, block.number));
         gameHashes.push(currentGameHash);
