@@ -434,4 +434,7 @@ contract CrashGame is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradea
 
     /// @notice function to accept Ether.
     receive() external payable {}
+
+    // Storage gap for upgradeability
+    uint256[50] private __gap;
 }
