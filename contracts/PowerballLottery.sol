@@ -5,20 +5,25 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title Powerball Lottery Contract with Percentage-Based Prize Distribution and Protocol Token Support
 /// @author Emmanuel Amodu
 /// @notice This contract implements a lottery where prizes are distributed based on percentages of the total pool, using a protocol ERC20 token.
 /// @dev The contract uses a secure commit-reveal scheme for the winning numbers and handles prize distribution according to specified percentages.
 contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
+    using SafeERC20 for IERC20;
+
     // State variables
-    IERC20 public protocolToken;            // Protocol token used for the lottery
-    uint256 public ticketPrice;             // Price per ticket in protocol tokens
-    uint256 public totalPool;               // Total amount of tokens in the pool
-    bytes32 public winningNumbersHash;      // Commitment to the winning numbers
-    bool public isRevealed;                 // Indicates if winning numbers have been revealed
-    bool public isOpen;                   // Indicates if ticket sales are closed
-    uint256 public drawTimestamp;           // Timestamp when draw occurs
+    IERC20 public token;                          // Protocol token used for the lottery
+    uint256 public ticketPrice;                   // Price per ticket in protocol tokens
+    uint256 public totalPool;                     // Total amount of tokens in the pool
+    bytes32 public winningNumbersHash;            // Commitment to the winning numbers
+    bool public isRevealed;                       // Indicates if winning numbers have been revealed
+    bool public isOpen;                           // Indicates if ticket sales are closed
+    uint256 public drawTimestamp;                 // Timestamp when draw occurs
+    address public userWithHighestMatchingNumber; // Address of the player with the highest guess
+    uint256 public highestMatchPrize;             // Prize for the highest guess
 
     // Winning numbers
     uint8[5] public winningWhiteBalls;      // Winning white ball numbers
@@ -29,7 +34,9 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
     mapping(address => bool) public hasPurchased; // Tracks if a player has purchased a ticket
 
     // Mappings
-    mapping(address => Ticket[]) public playerTickets;      // Player address to their tickets
+    mapping(address => uint256[]) public playerTickets;     // Player address to their tickets
+    mapping(address => uint256) public referralRewards;    // Player address to their referrral rewards
+    Ticket[] public allTickets;                            // Array of all tickets
 
     // Total pending prizes
     uint256 public totalPendingPrizes; // Total amount of pending prizes in tokens
@@ -49,6 +56,7 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
     struct Ticket {
         uint8[5] whiteBalls; // Player's white ball numbers
         uint8 powerBall;     // Player's red Powerball number
+        address player;       // Player's address
         bool claimed;        // Whether the prize has been claimed
         uint256 prize;       // Prize amount for the ticket in tokens
         uint8 prizeTier;     // Prize tier for the ticket
@@ -79,17 +87,17 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Constructor to initialize the contract
     /// @param _ticketPrice The price per ticket in protocol tokens (with decimals)
-    /// @param _protocolToken The address of the protocol ERC20 token
-    constructor(address initialOwner, uint256 _ticketPrice, address _protocolToken) Ownable(initialOwner) {
+    /// @param _token The address of the protocol ERC20 token
+    constructor(address initialOwner, uint256 _ticketPrice, address _token) Ownable(initialOwner) {
         ticketPrice = _ticketPrice; // e.g., 100 * 10**18 for 100 tokens
-        protocolToken = IERC20(_protocolToken);
+        token = IERC20(_token);
     }
 
     /// @notice Allows players to purchase a ticket with selected numbers
     /// @param whiteBalls An array of 5 unique numbers between 1 and 69
     /// @param powerBall A number between 1 and 26
-    function purchaseTicket(uint8[5] calldata whiteBalls, uint8 powerBall) external whenOpen nonReentrant whenNotPaused {
-        require(protocolToken.transferFrom(msg.sender, address(this), ticketPrice), "Token transfer failed");
+    function purchaseTicket(uint8[5] calldata whiteBalls, uint8 powerBall, address referrer) external whenOpen nonReentrant whenNotPaused {
+        token.safeTransferFrom(msg.sender, address(this), ticketPrice);
         require(validWhiteBalls(whiteBalls), "Invalid white ball numbers");
         require(powerBall >= 1 && powerBall <= 26, "Invalid Powerball number");
 
@@ -98,11 +106,13 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
             whiteBalls: whiteBalls,
             powerBall: powerBall,
             claimed: false,
+            player: msg.sender,
             prize: 0, // Prize will be calculated after winning numbers are revealed
             prizeTier: 0 // Will be set during prize calculation
         });
 
-        playerTickets[msg.sender].push(newTicket);
+        allTickets.push(newTicket);
+        playerTickets[msg.sender].push(allTickets.length - 1);
         totalPool += ticketPrice;
 
         // Add player to the list if not already present
@@ -111,6 +121,7 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
             hasPurchased[msg.sender] = true;
         }
 
+        referralRewards[referrer] += ticketPrice / 10; // 10% of ticket price as referral reward
         emit TicketPurchased(msg.sender, playerTickets[msg.sender].length - 1, whiteBalls, powerBall);
     }
 
@@ -153,42 +164,51 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Players claim their prizes based on their tickets
     function claimPrizes() external whenRevealed nonReentrant whenNotPaused {
-        Ticket[] storage tickets = playerTickets[msg.sender];
+        uint256[] storage ticketId = playerTickets[msg.sender];
         uint256 totalPrize = 0;
 
-        for (uint256 i = 0; i < tickets.length; i++) {
-            if (!tickets[i].claimed && tickets[i].prize > 0) {
-                totalPrize += tickets[i].prize;
-                tickets[i].claimed = true;
+        for (uint256 i = 0; i < ticketId.length; i++) {
+            Ticket storage ticket = allTickets[ticketId[i]];
+            if (!ticket.claimed && ticket.prize > 0) {
+                totalPrize += ticket.prize;
+                ticket.claimed = true;
             }
         }
 
         require(totalPrize > 0, "No prizes to claim");
-        require(protocolToken.transfer(msg.sender, totalPrize), "Token transfer failed");
+        token.safeTransfer(msg.sender, totalPrize);
         emit PrizeClaimed(msg.sender, totalPrize);
     }
 
     /// @notice Calculates the prizes for all tickets after winning numbers are revealed
     function calculatePrizes() internal {
-        // First, categorize tickets into prize tiers
-        uint256[6] memory winnersCount; // Index 0 unused, tiers 1-5 correspond to prize tiers
+        uint256[7] memory winnersCount; // Index 0 unused
+        uint8 maxMatchingNumbers = 0;
 
-        for (uint256 i = 0; i < players.length; i++) {
-            address player = players[i];
-            Ticket[] storage tickets = playerTickets[player];
-            for (uint256 j = 0; j < tickets.length; j++) {
-                if (!tickets[j].claimed) {
-                    uint8 prizeTier = determinePrizeTier(tickets[j]);
-                    tickets[j].prizeTier = prizeTier;
-                    if (prizeTier > 0) {
-                        prizeTierWinners[prizeTier].push(player);
-                        winnersCount[prizeTier]++;
-                    }
+        for (uint256 i = 0; i < allTickets.length; i++) {
+            Ticket storage ticket = allTickets[i];
+
+            if (!ticket.claimed) {
+                uint8 prizeTier = determinePrizeTier(ticket);
+                ticket.prizeTier = prizeTier;
+                if (prizeTier > 0) {
+                    winnersCount[prizeTier]++;
+                }
+
+                // Calculate total matches
+                uint8 whiteBallMatches = countMatchingNumbers(ticket.whiteBalls, winningWhiteBalls);
+                bool powerBallMatch = (ticket.powerBall == winningPowerBall);
+                uint8 totalMatches = whiteBallMatches + (powerBallMatch ? 1 : 0);
+
+                // Update the user with the highest matching number
+                if (totalMatches > maxMatchingNumbers) {
+                    maxMatchingNumbers = totalMatches;
+                    userWithHighestMatchingNumber = ticket.player;
                 }
             }
         }
 
-        // Now, allocate prizes based on the number of winners in each tier
+        // Allocate prizes based on tiers
         for (uint8 tier = 1; tier <= 6; tier++) {
             uint256 tierPercentage = getTierPercentage(tier);
             uint256 tierPrizePool = (totalPool * tierPercentage) / 100;
@@ -197,15 +217,10 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
             if (winnerCount > 0) {
                 uint256 prizePerWinner = tierPrizePool / winnerCount;
 
-                // Assign prizes to winners in this tier
-                address[] storage tierWinners = prizeTierWinners[tier];
-                for (uint256 k = 0; k < tierWinners.length; k++) {
-                    address winner = tierWinners[k];
-                    Ticket[] storage tickets = playerTickets[winner];
-                    for (uint256 l = 0; l < tickets.length; l++) {
-                        if (tickets[l].prizeTier == tier && !tickets[l].claimed) {
-                            tickets[l].prize = prizePerWinner;
-                        }
+                for (uint256 i = 0; i < allTickets.length; i++) {
+                    Ticket storage ticket = allTickets[i];
+                    if (ticket.prizeTier == tier && !ticket.claimed) {
+                        ticket.prize = prizePerWinner;
                     }
                 }
             }
@@ -273,6 +288,22 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
+    /// @notice Gets the users ticket ids
+    /// @param user The address of the user
+    function getPlayerTickets(address user) external view returns (uint256[] memory) {
+        return playerTickets[user];
+    }
+
+    /// @notice Gets the ticket details
+    function getTicket(uint256 ticketId) external view returns (Ticket memory) {
+        return allTickets[ticketId];
+    }
+
+    /// @notice Gets Winning numbers
+    function getWinningNumbers() external view returns (uint8[5] memory, uint8) {
+        return (winningWhiteBalls, winningPowerBall);
+    }
+
     /// @notice Validates that the white ball numbers are unique and within the valid range
     /// @param whiteBalls The array of white ball numbers
     /// @return isValid True if the numbers are valid
@@ -297,9 +328,31 @@ contract PowerballLottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Allows the owner to withdraw any remaining tokens after prizes are distributed
     function ownerWithdraw() external onlyOwner whenRevealed nonReentrant whenNotPaused {
-        uint256 availableBalance = protocolToken.balanceOf(address(this)) - totalPendingPrizes;
+        uint256 availableBalance = token.balanceOf(address(this)) - totalPendingPrizes;
         require(availableBalance > 0, "No funds available for withdrawal");
 
-        require(protocolToken.transfer(owner(), availableBalance), "Token transfer failed");
+        token.safeTransfer(owner(), availableBalance);
+    }
+
+    /// @notice Allows the highest matching number ticket to claim their prize
+    function claimHighestMatchingRewards() external nonReentrant whenRevealed whenNotPaused {
+        require(msg.sender == userWithHighestMatchingNumber, "You are not the user with the highest matching number");
+        require(highestMatchPrize > 0, "No prize for the highest matching number");
+
+        token.safeTransfer(msg.sender, highestMatchPrize);
+    }
+
+    /// @notice Allows the owner to withdraw any remaining tokens after prizes are distributed
+    function setHighestMatchPrize(uint256 prize) external onlyOwner whenRevealed nonReentrant whenNotPaused {
+        highestMatchPrize = prize;
+    }
+
+    /// @notice Allows the referral rewards to be claimed by the referrer
+    function claimReferralRewards() external nonReentrant whenNotPaused {
+        uint256 reward = referralRewards[msg.sender];
+        require(reward > 0, "No referral rewards to claim");
+
+        referralRewards[msg.sender] = 0;
+        token.safeTransfer(msg.sender, reward);
     }
 }
