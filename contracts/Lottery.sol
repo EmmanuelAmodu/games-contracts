@@ -34,11 +34,11 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     uint256 public totalPendingPrizes; // Total amount of pending prizes in tokens
 
     // Multipliers based on the number of matches
-    uint256[7] public multipliers = [0, 1, 2, 5, 10, 50, 100]; // Index corresponds to number of matches
+    uint256[6] public multipliers = [0, 1, 2, 5, 10, 50]; // Index corresponds to number of matches
 
     uint8 public constant MAX_NUMBER = 99;  // Maximum number for the lottery
     uint8 public constant MIN_NUMBER = 1;   // Minimum number for the lottery
-    uint8 public constant NUM_BALLS = 6;    // Number of balls in the draw
+    uint8 public constant NUM_BALLS = 5;    // Number of balls in the draw
     uint8 public referalRewardPercent = 10; // 10% of ticket price as referral reward
 
     // Winning numbers
@@ -46,7 +46,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     // Structs
     struct Ticket {
-        uint8[NUM_BALLS] numbers;    // Player's selected numbers
+        uint8[] numbers;    // Player's selected numbers
         address player;      // Player's address
         bool claimed;        // Whether the prize has been claimed
         uint256 amount;      // Amount of tokens staked
@@ -55,7 +55,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     // Events
-    event TicketPurchased(address indexed player, uint256 ticketId, uint8[NUM_BALLS] numbers);
+    event TicketPurchased(address indexed player, uint256 ticketId, uint8[] numbers);
     event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers);
     event PrizeClaimed(address indexed player, uint256 amount);
 
@@ -82,8 +82,34 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Allows players to purchase a ticket with selected numbers
     /// @param numbers An array of 5 unique numbers between MIN_NUMBER and MAX_NUMBER
-    function purchaseTicket(uint8[NUM_BALLS] calldata numbers, address referrer, uint256 amount) external whenOpen nonReentrant whenNotPaused {
+    /// @param amount The amount of tokens to stake
+    /// @param referrer The address of the referrer
+    function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenOpen nonReentrant whenNotPaused {
         token.safeTransferFrom(msg.sender, address(this), amount);
+        _createTicket(numbers, referrer, amount);
+    }
+
+    /// @notice Allows players to purchase multiple tickets with selected numbers
+    /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
+    /// @param amounts An array of amounts for each ticket
+    /// @param referrer The address of the referrer
+    function purcaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
+        require(numbers.length == amounts.length, "Invalid input");
+
+        uint256 totalAmount = 0;
+        for (uint256 i = 0; i < amounts.length; i++) {
+            totalAmount += amounts[i];
+        }
+
+        token.safeTransferFrom(msg.sender, address(this), totalAmount);
+        for (uint256 i = 0; i < numbers.length; i++) {
+            _createTicket(numbers[i], referrer, amounts[i]);
+        }
+    }
+
+    /// @notice Allows players to purchase a ticket with selected numbers
+    /// @param numbers An array of 5 unique numbers between MIN_NUMBER and MAX_NUMBER
+    function _createTicket(uint8[] calldata numbers, address referrer, uint256 amount) internal {
         require(validNumbers(numbers), "Invalid numbers");
 
         // Store the ticket
@@ -124,17 +150,26 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of 5 unique winning numbers
     function revealWinningNumbers(
         bytes32 salt,
-        uint8[NUM_BALLS] calldata numbers
+        uint8[5] calldata numbers
     ) external onlyOwner whenOpen nonReentrant whenNotPaused {
         require(!isRevealed, "Winning numbers already revealed");
-        require(validNumbers(numbers), "Invalid winning numbers");
+
+        uint8[] memory numbersFixedLength = new uint8[](NUM_BALLS);
+        for (uint8 i = 0; i < NUM_BALLS; i++) {
+            numbersFixedLength[i] = numbers[i];
+        }
+    
+        require(validNumbers(numbersFixedLength), "Invalid winning numbers");
 
         // Verify commitment
         bytes32 hash = keccak256(abi.encodePacked(salt, numbers));
         require(hash == winningNumbersHash, "Commitment does not match");
 
         // Set winning numbers
-        winningNumbers = numbers;
+        for (uint8 i = 0; i < NUM_BALLS; i++) {
+            winningNumbers[i] = numbers[i];
+        }
+
         isRevealed = true;
         isOpen = false; // Close ticket sales
 
@@ -191,14 +226,14 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Counts the number of matching numbers between two arrays
-    /// @param numbers1 The first array of numbers
-    /// @param numbers2 The second array of numbers
+    /// @param numbers The first array of numbers
+    /// @param _winningNumbers The second array of numbers
     /// @return count The count of matching numbers
-    function countMatchingNumbers(uint8[NUM_BALLS] memory numbers1, uint8[NUM_BALLS] memory numbers2) internal pure returns (uint8 count) {
+    function countMatchingNumbers(uint8[] memory numbers, uint8[NUM_BALLS] memory _winningNumbers) internal pure returns (uint8 count) {
         count = 0;
-        for (uint8 i = 0; i < numbers1.length; i++) {
-            for (uint8 j = 0; j < numbers2.length; j++) {
-                if (numbers1[i] == numbers2[j]) {
+        for (uint8 i = 0; i < numbers.length; i++) {
+            for (uint8 j = 0; j < _winningNumbers.length; j++) {
+                if (numbers[i] == _winningNumbers[j]) {
                     count++;
                     break;
                 }
@@ -225,7 +260,9 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @notice Validates that the numbers are unique and within the valid range
     /// @param numbers The array of numbers
     /// @return isValid True if the numbers are valid
-    function validNumbers(uint8[NUM_BALLS] memory numbers) internal pure returns (bool isValid) {
+    function validNumbers(uint8[] memory numbers) internal pure returns (bool isValid) {
+        require(numbers.length <= NUM_BALLS, "Invalid number of balls");
+
         isValid = true;
         for (uint8 i = 0; i < numbers.length; i++) {
             if (numbers[i] < MIN_NUMBER || numbers[i] > MAX_NUMBER) {
