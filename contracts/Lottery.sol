@@ -7,9 +7,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @title Lottery Contract with Multiplier-Based Prize Distribution
+/// @title Lottery Contract with All-or-Nothing Prize Distribution
 /// @author Emmanuel Amodu
-/// @notice This contract implements a lottery where each matched number gives the ticket a multiplier for the payout.
+/// @notice This contract implements a lottery where players win only if all their selected numbers match the winning numbers.
 contract Lottery is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
@@ -33,13 +33,10 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     // Total pending prizes
     uint256 public totalPendingPrizes; // Total amount of pending prizes in tokens
 
-    // Multipliers based on the number of matches
-    uint256[6] public multipliers = [0, 1, 2, 5, 10, 50]; // Index corresponds to number of matches
-
-    uint8 public constant MAX_NUMBER = 99;  // Maximum number for the lottery
+    uint8 public constant MAX_NUMBER = 90;  // Maximum number for the lottery
     uint8 public constant MIN_NUMBER = 1;   // Minimum number for the lottery
     uint8 public constant NUM_BALLS = 5;    // Number of balls in the draw
-    uint8 public referalRewardPercent = 10; // 10% of ticket price as referral reward
+    uint8 public referralRewardPercent = 10; // 10% of ticket price as referral reward
 
     // Winning numbers
     uint8[NUM_BALLS] public winningNumbers; // Winning numbers
@@ -47,11 +44,10 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     // Structs
     struct Ticket {
         uint8[] numbers;    // Player's selected numbers
-        address player;      // Player's address
-        bool claimed;        // Whether the prize has been claimed
-        uint256 amount;      // Amount of tokens staked
-        uint256 prize;       // Prize amount for the ticket in tokens
-        uint256 multiplier;  // Multiplier for the ticket based on matching numbers
+        address player;     // Player's address
+        bool claimed;       // Whether the prize has been claimed
+        uint256 amount;     // Amount of tokens staked
+        uint256 prize;      // Prize amount for the ticket in tokens
     }
 
     // Events
@@ -81,10 +77,11 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Allows players to purchase a ticket with selected numbers
-    /// @param numbers An array of 5 unique numbers between MIN_NUMBER and MAX_NUMBER
+    /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amount The amount of tokens to stake
     /// @param referrer The address of the referrer
     function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenOpen nonReentrant whenNotPaused {
+        require(amount > 0, "Amount must be greater than zero");
         token.safeTransferFrom(msg.sender, address(this), amount);
         _createTicket(numbers, referrer, amount);
     }
@@ -93,11 +90,12 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amounts An array of amounts for each ticket
     /// @param referrer The address of the referrer
-    function purcaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
-        require(numbers.length == amounts.length, "Invalid input");
+    function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
+        require(numbers.length == amounts.length, "Invalid input lengths");
 
         uint256 totalAmount = 0;
         for (uint256 i = 0; i < amounts.length; i++) {
+            require(amounts[i] > 0, "Amount must be greater than zero");
             totalAmount += amounts[i];
         }
 
@@ -107,8 +105,8 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @notice Allows players to purchase a ticket with selected numbers
-    /// @param numbers An array of 5 unique numbers between MIN_NUMBER and MAX_NUMBER
+    /// @notice Internal function to create a ticket
+    /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     function _createTicket(uint8[] calldata numbers, address referrer, uint256 amount) internal {
         require(validNumbers(numbers), "Invalid numbers");
 
@@ -118,8 +116,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
             claimed: false,
             amount: amount,
             player: msg.sender,
-            prize: 0,       // Prize will be calculated after winning numbers are revealed
-            multiplier: 0   // Will be set during prize calculation
+            prize: 0 // Prize will be calculated after winning numbers are revealed
         });
 
         allTickets.push(newTicket);
@@ -132,8 +129,11 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
             hasPurchased[msg.sender] = true;
         }
 
-        referralRewards[referrer] += amount / referalRewardPercent; // 10% of ticket price as referral reward
-        emit TicketPurchased(msg.sender, playerTickets[msg.sender].length - 1, numbers);
+        if (referrer != address(0) && referrer != msg.sender) {
+            referralRewards[referrer] += (amount * referralRewardPercent) / 100;
+        }
+
+        emit TicketPurchased(msg.sender, allTickets.length - 1, numbers);
     }
 
     /// @notice Owner commits to the winning numbers using a hash
@@ -150,16 +150,17 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of 5 unique winning numbers
     function revealWinningNumbers(
         bytes32 salt,
-        uint8[5] calldata numbers
+        uint8[NUM_BALLS] calldata numbers
     ) external onlyOwner whenOpen nonReentrant whenNotPaused {
         require(!isRevealed, "Winning numbers already revealed");
 
-        uint8[] memory numbersFixedLength = new uint8[](NUM_BALLS);
+        // Convert the fixed-size array to a dynamic array for validation
+        uint8[] memory numbersDynamic = new uint8[](NUM_BALLS);
         for (uint8 i = 0; i < NUM_BALLS; i++) {
-            numbersFixedLength[i] = numbers[i];
+            numbersDynamic[i] = numbers[i];
         }
-    
-        require(validNumbers(numbersFixedLength), "Invalid winning numbers");
+
+        require(validNumbers(numbersDynamic), "Invalid winning numbers");
 
         // Verify commitment
         bytes32 hash = keccak256(abi.encodePacked(salt, numbers));
@@ -174,9 +175,6 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         isOpen = false; // Close ticket sales
 
         emit WinningNumbersRevealed(winningNumbers);
-
-        // Calculate prizes for all tickets
-        calculatePrizes();
     }
 
     /// @notice Players claim their prizes based on their tickets
@@ -186,6 +184,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
         for (uint256 i = 0; i < ticketIds.length; i++) {
             Ticket storage ticket = allTickets[ticketIds[i]];
+            calculatePrizes(ticket);
             if (!ticket.claimed && ticket.prize > 0) {
                 totalPrize += ticket.prize;
                 ticket.claimed = true;
@@ -199,35 +198,44 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Calculates the prizes for all tickets after winning numbers are revealed
-    function calculatePrizes() internal {
-        for (uint256 i = 0; i < allTickets.length; i++) {
-            Ticket storage ticket = allTickets[i];
+    function calculatePrizes(Ticket storage ticket) internal {
+        if (!ticket.claimed) {
+            uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, winningNumbers);
 
-            if (!ticket.claimed) {
-                uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, winningNumbers);
-                ticket.multiplier = getMultiplier(matchingNumbers);
-                ticket.prize = ticket.amount * ticket.multiplier;
+            // Check if the player matched all their selected numbers
+            if (matchingNumbers == ticket.numbers.length) {
+                // Prize is proportional to the amount staked and number of numbers matched
+                uint256 multiplier = getMultiplier(ticket.numbers.length);
+                ticket.prize = ticket.amount * multiplier;
 
                 // Update totalPendingPrizes
                 totalPendingPrizes += ticket.prize;
+            } else {
+                ticket.prize = 0; // No prize if not all numbers matched
             }
         }
     }
 
-    /// @notice Determines the multiplier based on the number of matching numbers
-    /// @param matchingNumbers The number of matching numbers
+    /// @notice Determines the multiplier based on the number of numbers selected
+    /// @param numSelected The number of numbers the player selected
     /// @return multiplier The multiplier for the ticket
-    function getMultiplier(uint8 matchingNumbers) internal view returns (uint256 multiplier) {
-        if (matchingNumbers >= 0 && matchingNumbers <= NUM_BALLS) {
-            multiplier = multipliers[matchingNumbers];
+    function getMultiplier(uint256 numSelected) public pure returns (uint256 multiplier) {
+        if (numSelected == 2) {
+            multiplier = 220;
+        } else if (numSelected == 3) {
+            multiplier = 8300;
+        } else if (numSelected == 4) {
+            multiplier = 11700;
+        } else if (numSelected == 5) {
+            multiplier = 97000;
         } else {
             multiplier = 0;
         }
     }
 
     /// @notice Counts the number of matching numbers between two arrays
-    /// @param numbers The first array of numbers
-    /// @param _winningNumbers The second array of numbers
+    /// @param numbers The player's selected numbers
+    /// @param _winningNumbers The winning numbers
     /// @return count The count of matching numbers
     function countMatchingNumbers(uint8[] memory numbers, uint8[NUM_BALLS] memory _winningNumbers) internal pure returns (uint8 count) {
         count = 0;
@@ -261,7 +269,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers The array of numbers
     /// @return isValid True if the numbers are valid
     function validNumbers(uint8[] memory numbers) internal pure returns (bool isValid) {
-        require(numbers.length <= NUM_BALLS, "Invalid number of balls");
+        require(numbers.length >= 2 && numbers.length <= NUM_BALLS, "Invalid number of selections");
 
         isValid = true;
         for (uint8 i = 0; i < numbers.length; i++) {
@@ -298,10 +306,9 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         token.safeTransfer(msg.sender, reward);
     }
 
-    /// @notice Update referalRewardPercent amount
-    function updateReferalRewardPercent(uint8 percentAmount) external onlyOwner whenNotPaused {
-        require(percentAmount > 0, "Invalid percent amount");
-        require(percentAmount <= 10, "Invalid percent amount");
-        referalRewardPercent = percentAmount;
+    /// @notice Update referralRewardPercent amount
+    function updateReferralRewardPercent(uint8 percentAmount) external onlyOwner whenNotPaused {
+        require(percentAmount > 0 && percentAmount <= 10, "Invalid percent amount");
+        referralRewardPercent = percentAmount;
     }
 }
