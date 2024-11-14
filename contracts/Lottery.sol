@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.17;
 
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+// Import OpenZeppelin contracts for security and access control
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title Lottery Contract with All-or-Nothing Prize Distribution
 /// @author Emmanuel Amodu
 /// @notice This contract implements a lottery where players win only if all their selected numbers match the winning numbers.
-contract Lottery is Ownable, ReentrancyGuard, Pausable {
+contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
     using SafeERC20 for IERC20;
 
     // State variables
@@ -30,18 +32,14 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     mapping(address => uint256) public referralRewards;    // Player address to their referral rewards
     Ticket[] public allTickets;                            // Array of all tickets
 
-    // Total pending prizes
-    uint256 public totalPendingPrizes; // Total amount of pending prizes in tokens
-
     uint8 public constant MAX_NUMBER = 90;  // Maximum number for the lottery
     uint8 public constant MIN_NUMBER = 1;   // Minimum number for the lottery
     uint8 public constant NUM_BALLS = 5;    // Number of balls in the draw
-    uint8 public referralRewardPercent = 10; // 10% of ticket price as referral reward
+    uint8 public referralRewardPercent; // percent of ticket price as referral reward
 
     // Winning numbers
     uint8[NUM_BALLS] public winningNumbers; // Winning numbers
 
-    // Structs
     struct Ticket {
         uint8[] numbers;    // Player's selected numbers
         address player;     // Player's address
@@ -50,10 +48,22 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         uint256 prize;      // Prize amount for the ticket in tokens
     }
 
+    struct Games {
+        uint8[NUM_BALLS] winningNumbers;
+        mapping(address => uint256[]) playerTickets;
+        Ticket[] allTickets;
+        uint256 totalPool;
+    }
+
+    mapping(bytes32 => Games) private previousGames; // Mapping to store previous games
+
     // Events
     event TicketPurchased(address indexed player, uint256 ticketId, uint8[] numbers);
     event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers);
     event PrizeClaimed(address indexed player, uint256 amount);
+    event GameSaved(bytes32 indexed commit, uint256 totalPool, uint256 drawTimestamp);
+    event ReferralRewardClaimed(address indexed referrer, uint256 amount);
+    event LotteryReset(bytes32 indexed commit);
 
     modifier whenNotOpen() {
         require(!isOpen, "Ticket sales are still open");
@@ -70,10 +80,16 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         _;
     }
 
-    /// @notice Constructor to initialize the contract with the protocol token
+    /// @notice Initialize the contract with the owner address.
+    /// @param initialOwner The address of the initial owner
     /// @param _token The address of the protocol ERC20 token
-    constructor(address initialOwner, address _token) Ownable(initialOwner) {
+    function initialize(address initialOwner, address _token) public initializer {
+        __Ownable_init(initialOwner);
+        __ReentrancyGuard_init();
+        __Pausable_init();
+
         token = IERC20(_token);
+        referralRewardPercent = 10;
     }
 
     /// @notice Allows players to purchase a ticket with selected numbers
@@ -87,7 +103,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Allows players to purchase multiple tickets with selected numbers
-    /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
+    /// @param numbers An array of arrays, each containing unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amounts An array of amounts for each ticket
     /// @param referrer The address of the referrer
     function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
@@ -107,6 +123,8 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Internal function to create a ticket
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
+    /// @param referrer The address of the referrer
+    /// @param amount The amount of tokens staked
     function _createTicket(uint8[] calldata numbers, address referrer, uint256 amount) internal {
         require(validNumbers(numbers), "Invalid numbers");
 
@@ -139,6 +157,8 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @notice Owner commits to the winning numbers using a hash
     /// @param _winningNumbersHash The keccak256 hash of the salt and winning numbers
     function commitWinningNumbers(bytes32 _winningNumbersHash) external onlyOwner whenNotOpen nonReentrant whenNotPaused {
+        _saveGameAndReset(winningNumbersHash);
+        require(_winningNumbersHash != bytes32(0), "Invalid hash");
         winningNumbersHash = _winningNumbersHash;
         isOpen = true; // Open ticket sales
         isRevealed = false;
@@ -179,6 +199,9 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Players claim their prizes based on their tickets
     function claimPrizes() external whenRevealed nonReentrant whenNotPaused {
+        require(playerTickets[msg.sender].length > 0, "No tickets purchased");
+        require(isRevealed, "Winning numbers not revealed yet");
+
         uint256[] storage ticketIds = playerTickets[msg.sender];
         uint256 totalPrize = 0;
 
@@ -188,7 +211,29 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
             if (!ticket.claimed && ticket.prize > 0) {
                 totalPrize += ticket.prize;
                 ticket.claimed = true;
-                totalPendingPrizes -= ticket.prize;
+            }
+        }
+
+        require(totalPrize > 0, "No prizes to claim");
+        token.safeTransfer(msg.sender, totalPrize);
+        emit PrizeClaimed(msg.sender, totalPrize);
+    }
+
+    /// @notice Allows players to claim their prizes from a previous game
+    /// @param commit The unique commit hash identifying the game
+    function claimPrizePreviousGame(bytes32 commit) external whenRevealed nonReentrant whenNotPaused {
+        require(previousGames[commit].winningNumbers[0] != 0, "Game does not exist");
+        require(previousGames[commit].playerTickets[msg.sender].length > 0, "No tickets purchased");
+
+        uint256[] storage ticketIds = previousGames[commit].playerTickets[msg.sender];
+        uint256 totalPrize = 0;
+
+        for (uint256 i = 0; i < ticketIds.length; i++) {
+            Ticket storage ticket = previousGames[commit].allTickets[ticketIds[i]];
+            calculatePrizes(ticket);
+            if (!ticket.claimed && ticket.prize > 0) {
+                totalPrize += ticket.prize;
+                ticket.claimed = true;
             }
         }
 
@@ -198,6 +243,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Calculates the prizes for all tickets after winning numbers are revealed
+    /// @param ticket The ticket to calculate prizes for
     function calculatePrizes(Ticket storage ticket) internal {
         if (!ticket.claimed) {
             uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, winningNumbers);
@@ -207,13 +253,50 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
                 // Prize is proportional to the amount staked and number of numbers matched
                 uint256 multiplier = getMultiplier(ticket.numbers.length);
                 ticket.prize = ticket.amount * multiplier;
-
-                // Update totalPendingPrizes
-                totalPendingPrizes += ticket.prize;
             } else {
                 ticket.prize = 0; // No prize if not all numbers matched
             }
         }
+    }
+
+    /// @notice Saves the current game data and resets the contract for a new game
+    /// @param commit The unique commit hash identifying the game
+    function _saveGameAndReset(bytes32 commit) internal {
+        if (commit == bytes32(0)) {
+            return;
+        }
+
+        require(isRevealed, "Current game not revealed yet");
+        require(commit != bytes32(0), "Invalid commit hash");
+        require(previousGames[commit].winningNumbers[0] == 0, "Game already saved with this commit");
+
+        Games storage game = previousGames[commit];
+        game.totalPool = totalPool;
+
+        // Save winning numbers
+        for (uint8 i = 0; i < NUM_BALLS; i++) {
+            game.winningNumbers[i] = winningNumbers[i];
+        }
+
+        // Save player tickets
+        for (uint256 i = 0; i < players.length; i++) {
+            address player = players[i];
+            uint256[] memory tickets = playerTickets[player];
+            for (uint256 j = 0; j < tickets.length; j++) {
+                game.playerTickets[player].push(tickets[j]);
+            }
+        }
+
+        // Save all tickets
+        for (uint256 i = 0; i < allTickets.length; i++) {
+            game.allTickets.push(allTickets[i]);
+        }
+
+        // Emit event for saved game
+        emit GameSaved(commit, totalPool, drawTimestamp);
+
+        // Reset state variables for a new game
+        _resetLottery();
     }
 
     /// @notice Determines the multiplier based on the number of numbers selected
@@ -249,18 +332,23 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @notice Gets the user's ticket IDs
+    /// @notice Gets the user's ticket IDs for the current game
     /// @param user The address of the user
+    /// @return tickets An array of ticket IDs belonging to the user
     function getPlayerTickets(address user) external view returns (uint256[] memory) {
         return playerTickets[user];
     }
 
     /// @notice Gets the ticket details
+    /// @param ticketId The ID of the ticket
+    /// @return Ticket The details of the specified ticket
     function getTicket(uint256 ticketId) external view returns (Ticket memory) {
+        require(ticketId < allTickets.length, "Ticket does not exist");
         return allTickets[ticketId];
     }
 
-    /// @notice Gets the winning numbers
+    /// @notice Gets the winning numbers for the current game
+    /// @return winningNumbers The winning numbers
     function getWinningNumbers() external view returns (uint8[NUM_BALLS] memory) {
         return winningNumbers;
     }
@@ -290,11 +378,12 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Allows the owner to withdraw any remaining tokens after prizes are distributed
-    function ownerWithdraw() external onlyOwner whenRevealed nonReentrant whenNotPaused {
-        uint256 availableBalance = token.balanceOf(address(this)) - totalPendingPrizes;
-        require(availableBalance > 0, "No funds available for withdrawal");
+    /// @param amount The amount of tokens to withdraw
+    function ownerWithdraw(uint256 amount) external onlyOwner whenRevealed nonReentrant whenNotPaused {
+        uint256 availableBalance = token.balanceOf(address(this));
+        require(availableBalance >= amount, "No funds available for withdrawal");
 
-        token.safeTransfer(owner(), availableBalance);
+        token.safeTransfer(owner(), amount);
     }
 
     /// @notice Allows the referral rewards to be claimed by the referrer
@@ -307,8 +396,69 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Update referralRewardPercent amount
+    /// @param percentAmount The new referral reward percentage (must be between 1 and 10)
     function updateReferralRewardPercent(uint8 percentAmount) external onlyOwner whenNotPaused {
         require(percentAmount > 0 && percentAmount <= 10, "Invalid percent amount");
         referralRewardPercent = percentAmount;
     }
+
+    /// @notice Retrieves a previous game's winning numbers
+    /// @param commit The unique commit hash identifying the game
+    /// @return winningNumbers The winning numbers of the specified game
+    function getPreviousGameWinningNumbers(bytes32 commit) external view returns (uint8[NUM_BALLS] memory) {
+        Games storage game = previousGames[commit];
+        require(game.winningNumbers[0] != 0, "Game does not exist");
+        return game.winningNumbers;
+    }
+
+    /// @notice Retrieves a previous game's all tickets
+    /// @param commit The unique commit hash identifying the game
+    /// @return tickets An array of all tickets from the specified game
+    function getPreviousGameTickets(bytes32 commit) external view returns (Ticket[] memory tickets) {
+        Games storage game = previousGames[commit];
+        require(game.winningNumbers[0] != 0, "Game does not exist");
+        tickets = game.allTickets;
+    }
+
+    /// @notice Retrieves a player's tickets from a previous game
+    /// @param commit The unique commit hash identifying the game
+    /// @param player The address of the player
+    /// @return tickets An array of ticket IDs belonging to the player in the specified game
+    function getPreviousGamePlayerTickets(bytes32 commit, address player) external view returns (uint256[] memory tickets) {
+        Games storage game = previousGames[commit];
+        require(game.winningNumbers[0] != 0, "Game does not exist");
+        tickets = game.playerTickets[player];
+    }
+
+    /// @notice Resets the lottery for a new game after saving the current game
+    function _resetLottery() internal {
+        // Reset winning numbers
+        for (uint8 i = 0; i < NUM_BALLS; i++) {
+            winningNumbers[i] = 0;
+        }
+
+        // Reset mappings and arrays
+        for (uint256 i = 0; i < players.length; i++) {
+            address player = players[i];
+            delete playerTickets[player];
+            hasPurchased[player] = false;
+        }
+        delete players;
+        delete allTickets;
+
+        // Reset financial state
+        totalPool = 0;
+        winningNumbersHash = 0;
+        isRevealed = false;
+        isOpen = false;
+        drawTimestamp = 0;
+
+        emit LotteryReset(winningNumbersHash);
+    }
+
+    /// @notice Allows the contract to receive Ether
+    receive() external payable {}
+
+    // Storage gap for upgradeability
+    uint256[50] private __gap;
 }
