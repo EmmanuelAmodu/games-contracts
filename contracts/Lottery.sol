@@ -99,7 +99,19 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenOpen nonReentrant whenNotPaused {
         require(amount > 0, "Amount must be greater than zero");
         token.safeTransferFrom(msg.sender, address(this), amount);
-        _createTicket(numbers, referrer, amount);
+        _createTicket(numbers, amount);
+
+        totalPool += amount;
+
+        // Add player to the list if not already present
+        if (!hasPurchased[msg.sender]) {
+            players.push(msg.sender);
+            hasPurchased[msg.sender] = true;
+        }
+
+        if (referrer != address(0) && referrer != msg.sender) {
+            referralRewards[referrer] += (amount * referralRewardPercent) / 100;
+        }
     }
 
     /// @notice Allows players to purchase multiple tickets with selected numbers
@@ -117,15 +129,26 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
 
         token.safeTransferFrom(msg.sender, address(this), totalAmount);
         for (uint256 i = 0; i < numbers.length; i++) {
-            _createTicket(numbers[i], referrer, amounts[i]);
+            _createTicket(numbers[i], amounts[i]);
+        }
+
+        totalPool += totalAmount;
+
+        // Add player to the list if not already present
+        if (!hasPurchased[msg.sender]) {
+            players.push(msg.sender);
+            hasPurchased[msg.sender] = true;
+        }
+
+        if (referrer != address(0) && referrer != msg.sender) {
+            referralRewards[referrer] += (totalAmount * referralRewardPercent) / 100;
         }
     }
 
     /// @notice Internal function to create a ticket
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
-    /// @param referrer The address of the referrer
     /// @param amount The amount of tokens staked
-    function _createTicket(uint8[] calldata numbers, address referrer, uint256 amount) internal {
+    function _createTicket(uint8[] calldata numbers, uint256 amount) internal {
         require(validNumbers(numbers), "Invalid numbers");
 
         // Store the ticket
@@ -139,17 +162,6 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
 
         allTickets.push(newTicket);
         playerTickets[msg.sender].push(allTickets.length - 1);
-        totalPool += amount;
-
-        // Add player to the list if not already present
-        if (!hasPurchased[msg.sender]) {
-            players.push(msg.sender);
-            hasPurchased[msg.sender] = true;
-        }
-
-        if (referrer != address(0) && referrer != msg.sender) {
-            referralRewards[referrer] += (amount * referralRewardPercent) / 100;
-        }
 
         emit TicketPurchased(msg.sender, allTickets.length - 1, numbers);
     }
