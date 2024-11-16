@@ -21,8 +21,7 @@ contract LotteryTest is Test {
         token = new MockERC20("Mock Token", "MTK");
 
         // Deploy the lottery contract
-        lottery = new Lottery();
-        lottery.initialize(owner, address(token));
+        lottery = new Lottery(owner, address(token));
 
         // Distribute tokens to players
         token.mint(player1, 1000 ether);
@@ -126,7 +125,7 @@ contract LotteryTest is Test {
         }
     }
 
-    function testClaimPrizes() public {
+    function testclaimPrize() public {
         // Setup and reveal winning numbers
         vm.prank(owner);
         bytes32 salt = keccak256(abi.encodePacked("secret_salt"));
@@ -151,7 +150,7 @@ contract LotteryTest is Test {
         uint256 balanceBefore = token.balanceOf(player1);
 
         vm.prank(player1);
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         uint256 balanceAfter = token.balanceOf(player1);
 
@@ -199,47 +198,6 @@ contract LotteryTest is Test {
         assertEq(balanceAfter - balanceBefore, expectedReward);
     }
 
-    // function testOwnerWithdraw() public {
-    //     // Setup and reveal winning numbers
-    //     vm.prank(owner);
-    //     bytes32 salt = keccak256(abi.encodePacked("secret_salt"));
-    //     uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
-    //     bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
-    //     lottery.commitWinningNumbers(winningHash);
-
-    //     vm.startPrank(player1);
-    //     uint8[] memory numbers = new uint8[](5);
-    //     numbers[0] = 1;
-    //     numbers[1] = 2;
-    //     numbers[2] = 3;
-    //     numbers[3] = 4;
-    //     numbers[4] = 5;
-    //     lottery.purchaseTicket(numbers, ticketAmount, referrer);
-    //     vm.stopPrank();
-
-    //     vm.prank(owner);
-    //     lottery.revealWinningNumbers(salt, winningNumbers);
-
-    //     // Player1 claims prize
-    //     vm.prank(player1);
-    //     lottery.claimPrizes();
-
-    //     // Owner withdraws remaining funds
-    //     uint256 balanceBefore = token.balanceOf(owner);
-    //     uint256 contractBalanceBeforeWithdraw = token.balanceOf(address(lottery));
-
-    //     vm.prank(owner);
-    //     lottery.ownerWithdraw();
-
-    //     uint256 balanceAfter = token.balanceOf(owner);
-
-    //     // Expected withdrawal is the contract's balance before withdrawal
-    //     uint256 expectedWithdrawal = contractBalanceBeforeWithdraw;
-
-    //     // Check if the owner received the remaining funds
-    //     assertEq(balanceAfter - balanceBefore, expectedWithdrawal);
-    // }
-
     function testPurchaseMultipleTickets() public {
         vm.prank(owner);
         bytes32 salt = keccak256(abi.encodePacked("secret_salt"));
@@ -285,7 +243,7 @@ contract LotteryTest is Test {
         uint256 balanceBefore = token.balanceOf(player1);
 
         vm.prank(player1);
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         uint256 balanceAfter = token.balanceOf(player1);
 
@@ -339,7 +297,7 @@ contract LotteryTest is Test {
         // Player1 claims prize
         uint256 balanceBefore1 = token.balanceOf(player1);
         vm.prank(player1);
-        lottery.claimPrizes();
+        lottery.claimPrize();
         uint256 balanceAfter1 = token.balanceOf(player1);
         uint256 expectedPrize1 = ticketAmount * lottery.getMultiplier(5); // Multiplier for 5 selected numbers
         assertEq(balanceAfter1 - balanceBefore1, expectedPrize1);
@@ -347,7 +305,7 @@ contract LotteryTest is Test {
         // Player2 attempts to claim prize (should fail)
         vm.prank(player2);
         vm.expectRevert("No prizes to claim");
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         // Ensure Player2's ticket is marked as not claimed and has no prize
         uint256[] memory tickets2 = lottery.getPlayerTickets(player2);
@@ -382,7 +340,7 @@ contract LotteryTest is Test {
         // Player1 attempts to claim prize (should fail)
         vm.prank(player1);
         vm.expectRevert("No prizes to claim");
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         // Ensure Player1's ticket is marked as not claimed and has no prize
         uint256[] memory tickets = lottery.getPlayerTickets(player1);
@@ -415,7 +373,7 @@ contract LotteryTest is Test {
         uint256 balanceBefore = token.balanceOf(player1);
 
         vm.prank(player1);
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         uint256 balanceAfter = token.balanceOf(player1);
 
@@ -457,7 +415,7 @@ contract LotteryTest is Test {
         uint256 balanceBefore = token.balanceOf(player2);
 
         vm.prank(player2);
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         uint256 balanceAfter = token.balanceOf(player2);
 
@@ -500,7 +458,7 @@ contract LotteryTest is Test {
     }
 
     // New Test: Users trying to claim prizes multiple times
-    function testClaimPrizesMultipleTimes() public {
+    function testclaimPrizeMultipleTimes() public {
         // Owner commits to winning numbers
         vm.prank(owner);
         bytes32 salt = keccak256(abi.encodePacked("multiple_claims_salt"));
@@ -526,7 +484,7 @@ contract LotteryTest is Test {
         // Player1 claims prize for the first time
         uint256 balanceBeforeFirstClaim = token.balanceOf(player1);
         vm.prank(player1);
-        lottery.claimPrizes();
+        lottery.claimPrize();
         uint256 balanceAfterFirstClaim = token.balanceOf(player1);
 
         // Check if the first prize was transferred
@@ -536,7 +494,7 @@ contract LotteryTest is Test {
         // Attempt to claim prizes again (should fail)
         vm.prank(player1);
         vm.expectRevert("No prizes to claim");
-        lottery.claimPrizes();
+        lottery.claimPrize();
 
         // Ensure the ticket remains marked as claimed
         uint256[] memory tickets = lottery.getPlayerTickets(player1);

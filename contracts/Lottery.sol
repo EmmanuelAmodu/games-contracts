@@ -2,26 +2,29 @@
 pragma solidity ^0.8.17;
 
 // Import OpenZeppelin contracts for security and access control
-import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 /// @title Lottery Contract with All-or-Nothing Prize Distribution
 /// @author Emmanuel Amodu
 /// @notice This contract implements a lottery where players win only if all their selected numbers match the winning numbers.
-contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable {
+contract Lottery is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // State variables
-    IERC20 public token;                          // Protocol token used for the lottery
-    uint256 public totalPool;                     // Total amount of tokens in the pool
-    bytes32 public winningNumbersHash;            // Commitment to the winning numbers
-    bool public isRevealed;                       // Indicates if winning numbers have been revealed
-    bool public isOpen;                           // Indicates if ticket sales are open
-    uint256 public drawTimestamp;                 // Timestamp when draw occurs
+    IERC20 public token;                                  // Protocol token used for the lottery
+    uint256 public totalPool;                             // Total amount of tokens in the pool
+    bytes32 public winningNumbersHash;                    // Commitment to the winning numbers
+    bool public isRevealed;                               // Indicates if winning numbers have been revealed
+    bool public isOpen;                                   // Indicates if ticket sales are open
+    uint256 public drawTimestamp;                         // Timestamp when draw occurs
+    uint256 public constant MAX_TICKET_PRICE = 1000;      // Maximum ticket price
+    uint256 public constant MIN_TICKET_PRICE = 1;         // Minimum ticket price
+    uint256 public constant MAX_TICKETS_PER_PLAYER = 100; // Maximum number of tickets per player
 
     // Player tracking
     address[] public players;                     // List of all player addresses
@@ -35,7 +38,8 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     uint8 public constant MAX_NUMBER = 90;  // Maximum number for the lottery
     uint8 public constant MIN_NUMBER = 1;   // Minimum number for the lottery
     uint8 public constant NUM_BALLS = 5;    // Number of balls in the draw
-    uint8 public referralRewardPercent; // percent of ticket price as referral reward
+    uint8 public referralRewardPercent;     // percent of ticket price as referral reward
+    uint8 public tokenDecimals;             // Decimals of the protocol token
 
     // Winning numbers
     uint8[NUM_BALLS] public winningNumbers; // Winning numbers
@@ -58,12 +62,14 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     mapping(bytes32 => Games) private previousGames; // Mapping to store previous games
 
     // Events
-    event TicketPurchased(address indexed player, uint256 ticketId, uint8[] numbers);
-    event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers);
-    event PrizeClaimed(address indexed player, uint256 amount);
+    event TicketPurchased(address indexed player, bytes32 indexed commit, uint256 ticketId, uint8[] numbers);
+    event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers, bytes32 indexed commit);
+    event PrizeClaimed(address indexed player, bytes32 indexed commit, uint256 amount);
     event GameSaved(bytes32 indexed commit, uint256 totalPool, uint256 drawTimestamp);
     event ReferralRewardClaimed(address indexed referrer, uint256 amount);
     event LotteryReset(bytes32 indexed commit);
+    event ReferralRewardPercentUpdated(uint8 newPercent);
+    event TokenAddressChanged(address newToken);
 
     modifier whenNotOpen() {
         require(!isOpen, "Ticket sales are still open");
@@ -83,12 +89,11 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     /// @notice Initialize the contract with the owner address.
     /// @param initialOwner The address of the initial owner
     /// @param _token The address of the protocol ERC20 token
-    function initialize(address initialOwner, address _token) public initializer {
-        __Ownable_init(initialOwner);
-        __ReentrancyGuard_init();
-        __Pausable_init();
+    constructor(address initialOwner, address _token) Ownable(initialOwner) {
+        require(_token != address(0), "Invalid token address");
 
         token = IERC20(_token);
+        tokenDecimals = IERC20Metadata(_token).decimals(); // IERC20Metadata includes decimals()
         referralRewardPercent = 10;
     }
 
@@ -97,7 +102,10 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     /// @param amount The amount of tokens to stake
     /// @param referrer The address of the referrer
     function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenOpen nonReentrant whenNotPaused {
-        require(amount > 0, "Amount must be greater than zero");
+        uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
+        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
+    
+        require(amount >= minTicketPrice && amount <= maxTicketPrice, "Invalid amount: must be between 1 and 1000");
         token.safeTransferFrom(msg.sender, address(this), amount);
         _createTicket(numbers, amount);
 
@@ -119,11 +127,14 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     /// @param amounts An array of amounts for each ticket
     /// @param referrer The address of the referrer
     function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
+        uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
+        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
+
         require(numbers.length == amounts.length, "Invalid input lengths");
 
         uint256 totalAmount = 0;
         for (uint256 i = 0; i < amounts.length; i++) {
-            require(amounts[i] > 0, "Amount must be greater than zero");
+            require(amounts[i] >= minTicketPrice && amounts[i] <= maxTicketPrice, "Invalid amount: must be between 1 and 1000");
             totalAmount += amounts[i];
         }
 
@@ -149,6 +160,7 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amount The amount of tokens staked
     function _createTicket(uint8[] calldata numbers, uint256 amount) internal {
+        require(playerTickets[msg.sender].length < MAX_TICKETS_PER_PLAYER, "Ticket limit reached");
         require(validNumbers(numbers), "Invalid numbers");
 
         // Store the ticket
@@ -163,7 +175,7 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
         allTickets.push(newTicket);
         playerTickets[msg.sender].push(allTickets.length - 1);
 
-        emit TicketPurchased(msg.sender, allTickets.length - 1, numbers);
+        emit TicketPurchased(msg.sender, winningNumbersHash, allTickets.length - 1, numbers);
     }
 
     /// @notice Owner commits to the winning numbers using a hash
@@ -206,11 +218,15 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
         isRevealed = true;
         isOpen = false; // Close ticket sales
 
-        emit WinningNumbersRevealed(winningNumbers);
+        uint256 ownerShare = totalPool / 10; // 10% of the pool goes to the owner
+        token.safeTransfer(owner(), ownerShare); // 10% of the pool goes to the owner
+        totalPool -= ownerShare;
+
+        emit WinningNumbersRevealed(winningNumbers, winningNumbersHash);
     }
 
     /// @notice Players claim their prizes based on their tickets
-    function claimPrizes() external whenRevealed nonReentrant whenNotPaused {
+    function claimPrize() external whenRevealed nonReentrant whenNotPaused {
         require(playerTickets[msg.sender].length > 0, "No tickets purchased");
         require(isRevealed, "Winning numbers not revealed yet");
 
@@ -219,7 +235,7 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
 
         for (uint256 i = 0; i < ticketIds.length; i++) {
             Ticket storage ticket = allTickets[ticketIds[i]];
-            calculatePrizes(ticket);
+            calculatePrizes(ticket, winningNumbers);
             if (!ticket.claimed && ticket.prize > 0) {
                 totalPrize += ticket.prize;
                 ticket.claimed = true;
@@ -228,12 +244,12 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
 
         require(totalPrize > 0, "No prizes to claim");
         token.safeTransfer(msg.sender, totalPrize);
-        emit PrizeClaimed(msg.sender, totalPrize);
+        emit PrizeClaimed(msg.sender, winningNumbersHash, totalPrize);
     }
 
     /// @notice Allows players to claim their prizes from a previous game
     /// @param commit The unique commit hash identifying the game
-    function claimPrizePreviousGame(bytes32 commit) external whenRevealed nonReentrant whenNotPaused {
+    function claimPrize(bytes32 commit) external nonReentrant whenNotPaused {
         require(previousGames[commit].winningNumbers[0] != 0, "Game does not exist");
         require(previousGames[commit].playerTickets[msg.sender].length > 0, "No tickets purchased");
 
@@ -242,7 +258,7 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
 
         for (uint256 i = 0; i < ticketIds.length; i++) {
             Ticket storage ticket = previousGames[commit].allTickets[ticketIds[i]];
-            calculatePrizes(ticket);
+            calculatePrizes(ticket, previousGames[commit].winningNumbers);
             if (!ticket.claimed && ticket.prize > 0) {
                 totalPrize += ticket.prize;
                 ticket.claimed = true;
@@ -251,14 +267,14 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
 
         require(totalPrize > 0, "No prizes to claim");
         token.safeTransfer(msg.sender, totalPrize);
-        emit PrizeClaimed(msg.sender, totalPrize);
+        emit PrizeClaimed(msg.sender, winningNumbersHash, totalPrize);
     }
 
     /// @notice Calculates the prizes for all tickets after winning numbers are revealed
     /// @param ticket The ticket to calculate prizes for
-    function calculatePrizes(Ticket storage ticket) internal {
+    function calculatePrizes(Ticket storage ticket, uint8[NUM_BALLS] memory gameWinningNumbers) internal {
         if (!ticket.claimed) {
-            uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, winningNumbers);
+            uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, gameWinningNumbers);
 
             // Check if the player matched all their selected numbers
             if (matchingNumbers == ticket.numbers.length) {
@@ -369,33 +385,26 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     /// @param numbers The array of numbers
     /// @return isValid True if the numbers are valid
     function validNumbers(uint8[] memory numbers) internal pure returns (bool isValid) {
-        require(numbers.length >= 2 && numbers.length <= NUM_BALLS, "Invalid number of selections");
-
-        isValid = true;
-        for (uint8 i = 0; i < numbers.length; i++) {
-            if (numbers[i] < MIN_NUMBER || numbers[i] > MAX_NUMBER) {
-                isValid = false;
-                break;
-            }
-            for (uint8 j = i + 1; j < numbers.length; j++) {
-                if (numbers[i] == numbers[j]) {
+        if (numbers.length >= 2 && numbers.length <= NUM_BALLS) {
+            isValid = true;
+            for (uint8 i = 0; i < numbers.length; i++) {
+                if (numbers[i] < MIN_NUMBER || numbers[i] > MAX_NUMBER) {
                     isValid = false;
                     break;
                 }
+                for (uint8 j = i + 1; j < numbers.length; j++) {
+                    if (numbers[i] == numbers[j]) {
+                        isValid = false;
+                        break;
+                    }
+                }
+                if (!isValid) {
+                    break;
+                }
             }
-            if (!isValid) {
-                break;
-            }
+        } else {
+            isValid = false;
         }
-    }
-
-    /// @notice Allows the owner to withdraw any remaining tokens after prizes are distributed
-    /// @param amount The amount of tokens to withdraw
-    function ownerWithdraw(uint256 amount) external onlyOwner whenRevealed nonReentrant whenNotPaused {
-        uint256 availableBalance = token.balanceOf(address(this));
-        require(availableBalance >= amount, "No funds available for withdrawal");
-
-        token.safeTransfer(owner(), amount);
     }
 
     /// @notice Allows the referral rewards to be claimed by the referrer
@@ -412,6 +421,7 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
     function updateReferralRewardPercent(uint8 percentAmount) external onlyOwner whenNotPaused {
         require(percentAmount > 0 && percentAmount <= 10, "Invalid percent amount");
         referralRewardPercent = percentAmount;
+        emit ReferralRewardPercentUpdated(percentAmount);
     }
 
     /// @notice Retrieves a previous game's winning numbers
@@ -468,8 +478,19 @@ contract Lottery is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeabl
         emit LotteryReset(winningNumbersHash);
     }
 
-    /// @notice Allows the contract to receive Ether
-    receive() external payable {}
+    /// @notice Changes the protocol token address
+    /// @param _token The address of the new protocol token
+    function changeToken(address _token) external onlyOwner {
+        require(_token != address(0), "Invalid token address");
+        token = IERC20(_token);
+        tokenDecimals = IERC20Metadata(_token).decimals();
+        emit TokenAddressChanged(_token);
+    }
+
+    /// @notice Emergency function to reset the lottery in case of unforeseen circumstances
+    function emergencyReset() external onlyOwner whenPaused {
+        _resetLottery();
+    }
 
     // Storage gap for upgradeability
     uint256[50] private __gap;
