@@ -332,13 +332,13 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @return multiplier The multiplier for the ticket
     function getMultiplier(uint256 numSelected) public pure returns (uint256 multiplier) {
         if (numSelected == 2) {
-            multiplier = 220;
+            multiplier = 240;
         } else if (numSelected == 3) {
-            multiplier = 8300;
+            multiplier = 2100;
         } else if (numSelected == 4) {
-            multiplier = 11700;
+            multiplier = 6000;
         } else if (numSelected == 5) {
-            multiplier = 97000;
+            multiplier = 44000;
         } else {
             multiplier = 0;
         }
