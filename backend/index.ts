@@ -21,9 +21,10 @@ const { values } = parseArgs({
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const RPC_URL = process.env.RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
+const GAME_VALUE_FILE = process.env.GAME_VALUE_FILE;
 
 // Validate Environment Variables
-if (!PRIVATE_KEY || !RPC_URL || !CONTRACT_ADDRESS) {
+if (!PRIVATE_KEY || !RPC_URL || !CONTRACT_ADDRESS || !GAME_VALUE_FILE) {
   throw new Error("Please set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS in the .env file");
 }
 
@@ -138,18 +139,13 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
       }
     }
 
-    const path = "./games.json";
-    await Bun.write(path, JSON.stringify({ saltHex, winningNumbers }));
+    await Bun.write(GAME_VALUE_FILE, JSON.stringify({ saltHex, winningNumbers }));
 
     // Generate the hash
     const winningNumbersHash = generateWinningNumbersHash(
       saltHex,
       winningNumbers
     );
-
-    // console.log("Salt (bytes32):", saltHex);
-    // console.log("Winning Numbers:", winningNumbers);
-    // console.log("Winning Numbers Hash:", winningNumbersHash);
 
     // Commit the winning numbers hash
     await commitWinningNumbers(winningNumbersHash);
@@ -158,12 +154,8 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
   if (values.reveal) {
     console.log("Revealing winning numbers...");
 
-    const path = "./games.json";
-    const data = await Bun.file(path).text();
+    const data = await Bun.file(GAME_VALUE_FILE).text();
     const { saltHex, winningNumbers } = JSON.parse(data);
-
-    // console.log("Salt (bytes32):", saltHex);
-    // console.log("Winning Numbers:", winningNumbers);
 
     // Reveal the winning numbers
     await revealWinningNumbers(saltHex, winningNumbers);
