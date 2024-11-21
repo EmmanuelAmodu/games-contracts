@@ -14,6 +14,7 @@ const { values } = parseArgs({
     },
   },
   strict: true,
+  allowPositionals: true,
 });
 
 // Environment Variables
@@ -137,7 +138,8 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
       }
     }
 
-    console.log(winningNumbers);
+    const path = "./games.json";
+    await Bun.write(path, JSON.stringify({ saltHex, winningNumbers }));
 
     // Generate the hash
     const winningNumbersHash = generateWinningNumbersHash(
@@ -151,9 +153,6 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
 
     // Commit the winning numbers hash
     await commitWinningNumbers(winningNumbersHash);
-
-    const path = "./games.json";
-    await Bun.write(path, JSON.stringify({ saltHex, winningNumbers }));
   }
 
   if (values.reveal) {

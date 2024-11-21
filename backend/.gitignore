@@ -175,4 +175,4 @@ dist
 .DS_Store
 
 # Games
-games.values
+games.json

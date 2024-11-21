@@ -13,7 +13,7 @@ contract LotteryDeployer is Script {
         console.log("Starting broadcast");
 
         address initialOwner = 0x6F6623B00B0b2eAEFA47A4fDE06d6931F7121722;
-        address USDC = 0x6F6623B00B0b2eAEFA47A4fDE06d6931F7121722;
+        address USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
 
         Lottery lottery = new Lottery(initialOwner, USDC);
 
