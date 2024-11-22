@@ -491,7 +491,4 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     function emergencyReset() external onlyOwner whenPaused {
         _resetLottery();
     }
-
-    // Storage gap for upgradeability
-    uint256[50] private __gap;
 }
