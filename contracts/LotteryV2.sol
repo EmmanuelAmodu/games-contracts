@@ -28,43 +28,43 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // State variables
-    IERC20 public USDC;                                   // Protocol token used for the lottery
-    IERC20 public USDA;                                   // Protocol token used for the lottery
-    IERC4626 public stUSD;                                // Protocol token used for the lottery
-    uint256 public totalPool;                             // Total amount of tokens in the pool
-    ITransmuter public transmuter;                        // Transmuter contract                       
-    bytes32 public winningNumbersHash;                    // Commitment to the winning numbers
-    bool public isRevealed;                               // Indicates if winning numbers have been revealed
-    bool public isOpen;                                   // Indicates if ticket sales are open
-    uint256 public drawTimestamp;                         // Timestamp when draw occurs
-    uint256 public constant MAX_TICKET_PRICE = 1000;      // Maximum ticket price
-    uint256 public constant MIN_TICKET_PRICE = 1;         // Minimum ticket price
+    IERC20 public USDC; // Protocol token used for the lottery
+    IERC20 public USDA; // Protocol token used for the lottery
+    IERC4626 public stUSD; // Protocol token used for the lottery
+    uint256 public totalPool; // Total amount of tokens in the pool
+    ITransmuter public transmuter; // Transmuter contract
+    bytes32 public winningNumbersHash; // Commitment to the winning numbers
+    bool public isRevealed; // Indicates if winning numbers have been revealed
+    bool public isOpen; // Indicates if ticket sales are open
+    uint256 public drawTimestamp; // Timestamp when draw occurs
+    uint256 public constant MAX_TICKET_PRICE = 1000; // Maximum ticket price
+    uint256 public constant MIN_TICKET_PRICE = 1; // Minimum ticket price
     uint256 public constant MAX_TICKETS_PER_PLAYER = 100; // Maximum number of tickets per player
 
     // Player tracking
-    address[] public players;                     // List of all player addresses
+    address[] public players; // List of all player addresses
     mapping(address => bool) public hasPurchased; // Tracks if a player has purchased a ticket
 
     // Mappings
-    mapping(address => uint256[]) public playerTickets;    // Player address to their tickets
-    mapping(address => uint256) public referralRewards;    // Player address to their referral rewards
-    Ticket[] public allTickets;                            // Array of all tickets
+    mapping(address => uint256[]) public playerTickets; // Player address to their tickets
+    mapping(address => uint256) public referralRewards; // Player address to their referral rewards
+    Ticket[] public allTickets; // Array of all tickets
 
-    uint8 public constant MAX_NUMBER = 90;  // Maximum number for the lottery
-    uint8 public constant MIN_NUMBER = 1;   // Minimum number for the lottery
-    uint8 public constant NUM_BALLS = 5;    // Number of balls in the draw
-    uint8 public referralRewardPercent;     // percent of ticket price as referral reward
-    uint8 public tokenDecimals;             // Decimals of the protocol token
+    uint8 public constant MAX_NUMBER = 90; // Maximum number for the lottery
+    uint8 public constant MIN_NUMBER = 1; // Minimum number for the lottery
+    uint8 public constant NUM_BALLS = 5; // Number of balls in the draw
+    uint8 public referralRewardPercent; // percent of ticket price as referral reward
+    uint8 public tokenDecimals; // Decimals of the protocol token
 
     // Winning numbers
     uint8[NUM_BALLS] public winningNumbers; // Winning numbers
 
     struct Ticket {
-        uint8[] numbers;    // Player's selected numbers
-        address player;     // Player's address
-        bool claimed;       // Whether the prize has been claimed
-        uint256 amount;     // Amount of tokens staked
-        uint256 prize;      // Prize amount for the ticket in tokens
+        uint8[] numbers; // Player's selected numbers
+        address player; // Player's address
+        bool claimed; // Whether the prize has been claimed
+        uint256 amount; // Amount of tokens staked
+        uint256 prize; // Prize amount for the ticket in tokens
     }
 
     struct Games {
@@ -77,10 +77,26 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     mapping(bytes32 => Games) private previousGames; // Mapping to store previous games
 
     // Events
-    event TicketPurchased(address indexed player, bytes32 indexed commit, uint256 ticketId, uint8[] numbers);
-    event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers, bytes32 indexed commit);
-    event PrizeClaimed(address indexed player, bytes32 indexed commit, uint256 amount);
-    event GameSaved(bytes32 indexed commit, uint256 totalPool, uint256 drawTimestamp);
+    event TicketPurchased(
+        address indexed player,
+        bytes32 indexed commit,
+        uint256 ticketId,
+        uint8[] numbers
+    );
+    event WinningNumbersRevealed(
+        uint8[NUM_BALLS] winningNumbers,
+        bytes32 indexed commit
+    );
+    event PrizeClaimed(
+        address indexed player,
+        bytes32 indexed commit,
+        uint256 amount
+    );
+    event GameSaved(
+        bytes32 indexed commit,
+        uint256 totalPool,
+        uint256 drawTimestamp
+    );
     event ReferralRewardClaimed(address indexed referrer, uint256 amount);
     event LotteryReset(bytes32 indexed commit);
     event ReferralRewardPercentUpdated(uint8 newPercent);
@@ -107,7 +123,13 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param _usda The address of the protocol ERC20 token
     /// @param _transmuter The address of the transmuter contract
     /// @param _stUSD The address of the protocol ERC20 token
-    constructor(address initialOwner, address _usdc, address _usda, address _transmuter, address _stUSD) Ownable(initialOwner) {
+    constructor(
+        address initialOwner,
+        address _usdc,
+        address _usda,
+        address _transmuter,
+        address _stUSD
+    ) Ownable(initialOwner) {
         require(_usdc != address(0), "Invalid token address");
 
         USDC = IERC20(_usdc);
@@ -122,11 +144,18 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amount The amount of tokens to stake
     /// @param referrer The address of the referrer
-    function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenOpen nonReentrant whenNotPaused {
-        uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
-        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
-    
-        require(amount >= minTicketPrice && amount <= maxTicketPrice, "Invalid amount: must be between 1 and 1000");
+    function purchaseTicket(
+        uint8[] calldata numbers,
+        uint256 amount,
+        address referrer
+    ) external whenOpen nonReentrant whenNotPaused {
+        uint256 minTicketPrice = MIN_TICKET_PRICE * 10 ** tokenDecimals;
+        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10 ** tokenDecimals;
+
+        require(
+            amount >= minTicketPrice && amount <= maxTicketPrice,
+            "Invalid amount: must be between 1 and 1000"
+        );
         _deposit(amount);
 
         _createTicket(numbers, amount);
@@ -148,15 +177,22 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of arrays, each containing unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amounts An array of amounts for each ticket
     /// @param referrer The address of the referrer
-    function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
-        uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
-        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
+    function purchaseMultipleTickets(
+        uint8[][] calldata numbers,
+        uint256[] calldata amounts,
+        address referrer
+    ) external whenOpen nonReentrant whenNotPaused {
+        uint256 minTicketPrice = MIN_TICKET_PRICE * 10 ** tokenDecimals;
+        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10 ** tokenDecimals;
 
         require(numbers.length == amounts.length, "Invalid input lengths");
 
         uint256 totalAmount = 0;
         for (uint256 i = 0; i < amounts.length; i++) {
-            require(amounts[i] >= minTicketPrice && amounts[i] <= maxTicketPrice, "Invalid amount: must be between 1 and 1000");
+            require(
+                amounts[i] >= minTicketPrice && amounts[i] <= maxTicketPrice,
+                "Invalid amount: must be between 1 and 1000"
+            );
             totalAmount += amounts[i];
         }
 
@@ -175,7 +211,9 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
         }
 
         if (referrer != address(0) && referrer != msg.sender) {
-            referralRewards[referrer] += (totalAmount * referralRewardPercent) / 100;
+            referralRewards[referrer] +=
+                (totalAmount * referralRewardPercent) /
+                100;
         }
     }
 
@@ -183,7 +221,10 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amount The amount of tokens staked
     function _createTicket(uint8[] calldata numbers, uint256 amount) internal {
-        require(playerTickets[msg.sender].length < MAX_TICKETS_PER_PLAYER, "Ticket limit reached");
+        require(
+            playerTickets[msg.sender].length < MAX_TICKETS_PER_PLAYER,
+            "Ticket limit reached"
+        );
         require(validNumbers(numbers), "Invalid numbers");
 
         // Store the ticket
@@ -198,12 +239,19 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
         allTickets.push(newTicket);
         playerTickets[msg.sender].push(allTickets.length - 1);
 
-        emit TicketPurchased(msg.sender, winningNumbersHash, allTickets.length - 1, numbers);
+        emit TicketPurchased(
+            msg.sender,
+            winningNumbersHash,
+            allTickets.length - 1,
+            numbers
+        );
     }
 
     /// @notice Owner commits to the winning numbers using a hash
     /// @param _winningNumbersHash The keccak256 hash of the salt and winning numbers
-    function commitWinningNumbers(bytes32 _winningNumbersHash) external onlyOwner whenNotOpen nonReentrant whenNotPaused {
+    function commitWinningNumbers(
+        bytes32 _winningNumbersHash
+    ) external onlyOwner whenNotOpen nonReentrant whenNotPaused {
         _saveGameAndReset(winningNumbersHash);
         require(_winningNumbersHash != bytes32(0), "Invalid hash");
         winningNumbersHash = _winningNumbersHash;
@@ -270,14 +318,24 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Allows players to claim their prizes from a previous game
     /// @param commit The unique commit hash identifying the game
     function claimPrize(bytes32 commit) external nonReentrant whenNotPaused {
-        require(previousGames[commit].winningNumbers[0] != 0, "Game does not exist");
-        require(previousGames[commit].playerTickets[msg.sender].length > 0, "No tickets purchased");
+        require(
+            previousGames[commit].winningNumbers[0] != 0,
+            "Game does not exist"
+        );
+        require(
+            previousGames[commit].playerTickets[msg.sender].length > 0,
+            "No tickets purchased"
+        );
 
-        uint256[] storage ticketIds = previousGames[commit].playerTickets[msg.sender];
+        uint256[] storage ticketIds = previousGames[commit].playerTickets[
+            msg.sender
+        ];
         uint256 totalPrize = 0;
 
         for (uint256 i = 0; i < ticketIds.length; i++) {
-            Ticket storage ticket = previousGames[commit].allTickets[ticketIds[i]];
+            Ticket storage ticket = previousGames[commit].allTickets[
+                ticketIds[i]
+            ];
             calculatePrizes(ticket, previousGames[commit].winningNumbers);
             if (!ticket.claimed && ticket.prize > 0) {
                 totalPrize += ticket.prize;
@@ -294,24 +352,46 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Collect and convert USDC to stUSD
     /// @param amount The amount of USDC to deposit
     function _deposit(uint256 amount) internal {
+        uint256 deadline = block.timestamp + 300; // 5 minutes from now
         USDC.safeTransferFrom(msg.sender, address(this), amount);
-        uint256 amountOut = transmuter.swapExactInput(amount, amount, address(USDC), address(USDA), address(this), 0);
+        uint256 amountOut = transmuter.swapExactInput(
+            amount,
+            amount,
+            address(USDC),
+            address(USDA),
+            address(this),
+            deadline
+        );
         stUSD.deposit(amountOut, address(this));
     }
 
     /// @notice Redeem stUSD, convert and send to USDC
     /// @param amount The amount to withdraw
     function _withdraw(uint256 amount) internal {
+        uint256 deadline = block.timestamp + 300; // 5 minutes from now
         uint256 amountOut = stUSD.redeem(amount, address(this), address(this));
-        uint256 finalOut = transmuter.swapExactInput(amountOut, amountOut, address(USDA), address(USDC), address(this), 0);
+        uint256 finalOut = transmuter.swapExactInput(
+            amountOut,
+            amountOut,
+            address(USDA),
+            address(USDC),
+            address(this),
+            deadline
+        );
         USDC.safeTransfer(msg.sender, finalOut);
     }
 
     /// @notice Calculates the prizes for all tickets after winning numbers are revealed
     /// @param ticket The ticket to calculate prizes for
-    function calculatePrizes(Ticket storage ticket, uint8[NUM_BALLS] memory gameWinningNumbers) internal {
+    function calculatePrizes(
+        Ticket storage ticket,
+        uint8[NUM_BALLS] memory gameWinningNumbers
+    ) internal {
         if (!ticket.claimed) {
-            uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, gameWinningNumbers);
+            uint8 matchingNumbers = countMatchingNumbers(
+                ticket.numbers,
+                gameWinningNumbers
+            );
 
             // Check if the player matched all their selected numbers
             if (matchingNumbers == ticket.numbers.length) {
@@ -333,7 +413,10 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
 
         require(isRevealed, "Current game not revealed yet");
         require(commit != bytes32(0), "Invalid commit hash");
-        require(previousGames[commit].winningNumbers[0] == 0, "Game already saved with this commit");
+        require(
+            previousGames[commit].winningNumbers[0] == 0,
+            "Game already saved with this commit"
+        );
 
         Games storage game = previousGames[commit];
         game.totalPool = totalPool;
@@ -367,7 +450,9 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Determines the multiplier based on the number of numbers selected
     /// @param numSelected The number of numbers the player selected
     /// @return multiplier The multiplier for the ticket
-    function getMultiplier(uint256 numSelected) public pure returns (uint256 multiplier) {
+    function getMultiplier(
+        uint256 numSelected
+    ) public pure returns (uint256 multiplier) {
         if (numSelected == 2) {
             multiplier = 240;
         } else if (numSelected == 3) {
@@ -385,7 +470,10 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers The player's selected numbers
     /// @param _winningNumbers The winning numbers
     /// @return count The count of matching numbers
-    function countMatchingNumbers(uint8[] memory numbers, uint8[NUM_BALLS] memory _winningNumbers) internal pure returns (uint8 count) {
+    function countMatchingNumbers(
+        uint8[] memory numbers,
+        uint8[NUM_BALLS] memory _winningNumbers
+    ) internal pure returns (uint8 count) {
         count = 0;
         for (uint8 i = 0; i < numbers.length; i++) {
             for (uint8 j = 0; j < _winningNumbers.length; j++) {
@@ -400,7 +488,9 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Gets the user's ticket IDs for the current game
     /// @param user The address of the user
     /// @return tickets An array of ticket IDs belonging to the user
-    function getPlayerTickets(address user) external view returns (uint256[] memory) {
+    function getPlayerTickets(
+        address user
+    ) external view returns (uint256[] memory) {
         return playerTickets[user];
     }
 
@@ -414,14 +504,20 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Gets the winning numbers for the current game
     /// @return winningNumbers The winning numbers
-    function getWinningNumbers() external view returns (uint8[NUM_BALLS] memory) {
+    function getWinningNumbers()
+        external
+        view
+        returns (uint8[NUM_BALLS] memory)
+    {
         return winningNumbers;
     }
 
     /// @notice Validates that the numbers are unique and within the valid range
     /// @param numbers The array of numbers
     /// @return isValid True if the numbers are valid
-    function validNumbers(uint8[] memory numbers) internal pure returns (bool isValid) {
+    function validNumbers(
+        uint8[] memory numbers
+    ) internal pure returns (bool isValid) {
         if (numbers.length >= 2 && numbers.length <= NUM_BALLS) {
             isValid = true;
             for (uint8 i = 0; i < numbers.length; i++) {
@@ -450,13 +546,18 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
         require(reward > 0, "No referral rewards to claim");
 
         referralRewards[msg.sender] = 0;
-        USDC.safeTransfer(msg.sender, reward);
+        _withdraw(reward);
     }
 
     /// @notice Update referralRewardPercent amount
     /// @param percentAmount The new referral reward percentage (must be between 1 and 10)
-    function updateReferralRewardPercent(uint8 percentAmount) external onlyOwner whenNotPaused {
-        require(percentAmount > 0 && percentAmount <= 10, "Invalid percent amount");
+    function updateReferralRewardPercent(
+        uint8 percentAmount
+    ) external onlyOwner whenNotPaused {
+        require(
+            percentAmount > 0 && percentAmount <= 10,
+            "Invalid percent amount"
+        );
         referralRewardPercent = percentAmount;
         emit ReferralRewardPercentUpdated(percentAmount);
     }
@@ -464,7 +565,9 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Retrieves a previous game's winning numbers
     /// @param commit The unique commit hash identifying the game
     /// @return winningNumbers The winning numbers of the specified game
-    function getPreviousGameWinningNumbers(bytes32 commit) external view returns (uint8[NUM_BALLS] memory) {
+    function getPreviousGameWinningNumbers(
+        bytes32 commit
+    ) external view returns (uint8[NUM_BALLS] memory) {
         Games storage game = previousGames[commit];
         require(game.winningNumbers[0] != 0, "Game does not exist");
         return game.winningNumbers;
@@ -473,7 +576,9 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Retrieves a previous game's all tickets
     /// @param commit The unique commit hash identifying the game
     /// @return tickets An array of all tickets from the specified game
-    function getPreviousGameTickets(bytes32 commit) external view returns (Ticket[] memory tickets) {
+    function getPreviousGameTickets(
+        bytes32 commit
+    ) external view returns (Ticket[] memory tickets) {
         Games storage game = previousGames[commit];
         require(game.winningNumbers[0] != 0, "Game does not exist");
         tickets = game.allTickets;
@@ -483,7 +588,10 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param commit The unique commit hash identifying the game
     /// @param player The address of the player
     /// @return tickets An array of ticket IDs belonging to the player in the specified game
-    function getPreviousGamePlayerTickets(bytes32 commit, address player) external view returns (uint256[] memory tickets) {
+    function getPreviousGamePlayerTickets(
+        bytes32 commit,
+        address player
+    ) external view returns (uint256[] memory tickets) {
         Games storage game = previousGames[commit];
         require(game.winningNumbers[0] != 0, "Game does not exist");
         tickets = game.playerTickets[player];
@@ -528,7 +636,10 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @param amount The amount of USDC to withdraw
     function withdraw(uint256 amount) external onlyOwner {
         require(amount > 0, "Invalid amount");
-        require(stUSD.balanceOf(address(this)) >= amount, "Insufficient balance");
+        require(
+            stUSD.balanceOf(address(this)) >= amount,
+            "Insufficient balance"
+        );
         _withdraw(amount);
     }
 
