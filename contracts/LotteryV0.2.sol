@@ -24,7 +24,7 @@ interface ITransmuter {
 /// @title Lottery Contract with All-or-Nothing Prize Distribution
 /// @author Emmanuel Amodu
 /// @notice This contract implements a lottery where players win only if all their selected numbers match the winning numbers.
-contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
+contract LotteryV03 is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // State variables
@@ -653,5 +653,15 @@ contract LotteryV2 is Ownable, ReentrancyGuard, Pausable {
     /// @notice Emergency function to reset the lottery in case of unforeseen circumstances
     function emergencyReset() external onlyOwner whenPaused {
         _resetLottery();
+    }
+
+    /// @notice Pause the contract
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        _unpause();
     }
 }

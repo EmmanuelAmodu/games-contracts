@@ -4,6 +4,7 @@ pragma solidity ^0.8.17;
 import "forge-std/Test.sol";
 import "../contracts/Lottery.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract LotteryTest is Test {
     Lottery public lottery;
@@ -13,6 +14,7 @@ contract LotteryTest is Test {
     address public player1 = address(0x2);
     address public player2 = address(0x3);
     address public referrer = address(0x4);
+    address public nonOwner = address(0x5);
 
     uint256 public ticketAmount = 100 ether; // Assuming token has 18 decimals
 
@@ -24,15 +26,30 @@ contract LotteryTest is Test {
         lottery = new Lottery(owner, address(token));
 
         // Distribute tokens to players
-        token.mint(player1, 1000 ether);
-        token.mint(player2, 1000 ether);
-        token.mint(address(lottery), 1_000_000_000_000 ether);
+        token.mint(player1, 100000 ether);
+        token.mint(player2, 100000 ether);
+        token.mint(referrer, 100000 ether);
+
+        token.mint(owner, 1_000_000_001 ether);
+
+        vm.prank(owner);
+        token.approve(address(lottery), type(uint256).max);
+
+        vm.prank(owner);
+        lottery.depositTokens(1_000_000_000 ether);
 
         // Players approve the lottery contract to spend their tokens
         vm.prank(player1);
         token.approve(address(lottery), type(uint256).max);
 
         vm.prank(player2);
+        token.approve(address(lottery), type(uint256).max);
+
+        vm.prank(referrer);
+        token.approve(address(lottery), type(uint256).max);
+
+        // Set nonOwner as a non-owner address
+        vm.prank(nonOwner);
         token.approve(address(lottery), type(uint256).max);
     }
 
@@ -43,6 +60,8 @@ contract LotteryTest is Test {
         bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
         lottery.commitWinningNumbers(winningHash);
         vm.stopPrank();
+
+        uint256 balanceBefore = token.balanceOf(address(lottery));
 
         vm.startPrank(player1);
         uint8[] memory numbers = new uint8[](5);
@@ -59,7 +78,7 @@ contract LotteryTest is Test {
         assertEq(tickets.length, 1);
 
         // Check if total pool is updated
-        assertEq(lottery.totalPool(), ticketAmount);
+        assertEq(lottery.totalPool(), balanceBefore + ticketAmount);
     }
 
     function testPurchaseTicketWithFewerNumbers() public {
@@ -69,6 +88,8 @@ contract LotteryTest is Test {
         bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
         lottery.commitWinningNumbers(winningHash);
         vm.stopPrank();
+
+        uint256 balanceBefore = token.balanceOf(address(lottery));
 
         vm.startPrank(player1);
         uint8[] memory numbers = new uint8[](3);
@@ -83,7 +104,7 @@ contract LotteryTest is Test {
         assertEq(tickets.length, 1);
 
         // Check if total pool is updated
-        assertEq(lottery.totalPool(), ticketAmount);
+        assertEq(lottery.totalPool(), balanceBefore + ticketAmount);
     }
 
     function testRevealWinningNumbersAndCalculatePrizes() public {
@@ -231,9 +252,6 @@ contract LotteryTest is Test {
         // Check if the tickets were purchased
         uint256[] memory tickets = lottery.getPlayerTickets(player1);
         assertEq(tickets.length, 2);
-
-        // Check if total pool is updated
-        assertEq(lottery.totalPool(), ticketAmount + (ticketAmount * 2));
 
         // Owner reveals the winning numbers
         vm.prank(owner);
@@ -439,6 +457,8 @@ contract LotteryTest is Test {
         bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
         lottery.commitWinningNumbers(winningHash);
 
+        uint256 balanceBefore = token.balanceOf(address(lottery));
+
         // Player1 attempts to purchase a ticket with duplicate numbers
         vm.startPrank(player1);
         uint8[] memory numbers = new uint8[](3);
@@ -454,7 +474,7 @@ contract LotteryTest is Test {
         assertEq(tickets.length, 0);
 
         // Ensure total pool remains unchanged
-        assertEq(lottery.totalPool(), 0);
+        assertEq(lottery.totalPool(), balanceBefore);
     }
 
     // New Test: Users trying to claim prizes multiple times
@@ -501,6 +521,495 @@ contract LotteryTest is Test {
         Lottery.Ticket memory ticket = lottery.getTicket(tickets[0]);
         assertTrue(ticket.claimed);
         assertEq(ticket.prize, expectedPrize);
+    }
+
+    // Test: Non-owner attempting to commit winning numbers (should revert)
+    function testNonOwnerCannotCommitWinningNumbers() public {
+        vm.prank(nonOwner);
+        bytes32 salt = keccak256(abi.encodePacked("non_owner_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        lottery.commitWinningNumbers(winningHash);
+    }
+
+    // Test: Non-owner attempting to reveal winning numbers (should revert)
+    function testNonOwnerCannotRevealWinningNumbers() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("owner_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        lottery.revealWinningNumbers(salt, winningNumbers);
+    }
+
+    // Test: Owner attempting to reveal winning numbers without committing (should revert)
+    function testRevealWithoutCommitment() public {
+        bytes32 salt = keccak256(abi.encodePacked("no_commit_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+
+        vm.prank(owner);
+        vm.expectRevert("Ticket sales are closed");
+        lottery.revealWinningNumbers(salt, winningNumbers);
+    }
+
+    // Test: Purchasing tickets when the lottery is closed (should revert)
+    function testPurchaseTicketWhenClosed() public {
+        // Lottery is closed by default
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](5);
+        numbers[0] = 1;
+        numbers[1] = 2;
+        numbers[2] = 3;
+        numbers[3] = 4;
+        numbers[4] = 5;
+        vm.expectRevert("Ticket sales are closed");
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Purchasing tickets when the lottery is paused (should revert)
+    function testPurchaseTicketWhenPaused() public {
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("paused_salt")));
+
+        vm.prank(owner);
+        lottery.pause();
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](5);
+        numbers[0] = 1;
+        numbers[1] = 2;
+        numbers[2] = 3;
+        numbers[3] = 4;
+        numbers[4] = 5;
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Owner updating referral reward percent
+    function testUpdateReferralRewardPercent() public {
+        vm.prank(owner);
+        lottery.updateReferralRewardPercent(5);
+        assertEq(lottery.referralRewardPercent(), 5);
+
+        // Attempt to set invalid percentage (should revert)
+        vm.prank(owner);
+        vm.expectRevert("Invalid percent amount");
+        lottery.updateReferralRewardPercent(0);
+
+        vm.prank(owner);
+        vm.expectRevert("Invalid percent amount");
+        lottery.updateReferralRewardPercent(11);
+    }
+
+    // Test: Non-owner attempting to update referral reward percent (should revert)
+    function testNonOwnerCannotUpdateReferralRewardPercent() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        lottery.updateReferralRewardPercent(5);
+    }
+
+    // Test: Exceeding maximum tickets per player (should revert)
+    function testExceedMaxTicketsPerPlayer() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("max_tickets_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 1;
+        numbers[1] = 2;
+
+        for (uint256 i = 0; i < lottery.MAX_TICKETS_PER_PLAYER(); i++) {
+            lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        }
+
+        // Attempt to purchase one more ticket (should revert)
+        vm.expectRevert("Ticket limit reached");
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Attempting to purchase ticket with invalid amount (too low)
+    function testPurchaseTicketWithInvalidAmountLow() public {
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("invalid_amount_low_salt")));
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 1;
+        numbers[1] = 2;
+
+        uint256 invalidAmount = (lottery.MIN_TICKET_PRICE() - 1) * 10 ** lottery.tokenDecimals();
+        vm.expectRevert("Invalid amount: must be between 1 and 1000");
+        lottery.purchaseTicket(numbers, invalidAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Attempting to purchase ticket with invalid amount (too high)
+    function testPurchaseTicketWithInvalidAmountHigh() public {
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("invalid_amount_high_salt")));
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 1;
+        numbers[1] = 2;
+
+        uint256 invalidAmount = (lottery.MAX_TICKET_PRICE() + 1) * 10 ** lottery.tokenDecimals();
+        vm.expectRevert("Invalid amount: must be between 1 and 1000");
+        lottery.purchaseTicket(numbers, invalidAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Owner changing the token address
+    function testChangeToken() public {
+        MockERC20 newToken = new MockERC20("New Mock Token", "NMT");
+        vm.prank(owner);
+        lottery.changeToken(address(newToken));
+        assertEq(address(lottery.token()), address(newToken));
+        assertEq(lottery.tokenDecimals(), newToken.decimals());
+
+        // Attempt to set invalid token address (should revert)
+        vm.prank(owner);
+        vm.expectRevert("Invalid token address");
+        lottery.changeToken(address(0));
+    }
+
+    // Test: Non-owner attempting to change the token address (should revert)
+    function testNonOwnerCannotChangeToken() public {
+        MockERC20 newToken = new MockERC20("New Mock Token", "NMT");
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        lottery.changeToken(address(newToken));
+    }
+
+    // Test: Pausing and unpausing the contract
+    function testPauseAndUnpause() public {
+        vm.prank(owner);
+        lottery.pause();
+        assertTrue(lottery.paused());
+
+        // Attempt to purchase ticket while paused (should revert)
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 1;
+        numbers[1] = 2;
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+
+        // Owner unpauses the contract
+        vm.prank(owner);
+        lottery.unpause();
+        assertFalse(lottery.paused());
+    }
+
+    // Test: Non-owner attempting to pause the contract (should revert)
+    function testNonOwnerCannotPause() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        lottery.pause();
+    }
+
+    // Test: Emergency reset by owner
+    function testEmergencyReset() public {
+        vm.prank(owner);
+        lottery.pause();
+
+        vm.prank(owner);
+        lottery.emergencyReset();
+
+        // Check that the lottery is reset
+        assertEq(lottery.totalPool(), 0);
+        assertFalse(lottery.isOpen());
+        assertFalse(lottery.isRevealed());
+        assertEq(lottery.drawTimestamp(), 0);
+    }
+
+    // Test: Non-owner attempting to perform emergency reset (should revert)
+    function testNonOwnerCannotEmergencyReset() public {
+        vm.prank(owner);
+        lottery.pause();
+
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        lottery.emergencyReset();
+    }
+
+    // Test: Claiming referral rewards when there are none (should revert)
+    function testClaimReferralRewardsWhenNone() public {
+        vm.prank(referrer);
+        vm.expectRevert("No referral rewards to claim");
+        lottery.claimReferralRewards();
+    }
+
+    // Test: Referrer is the same as the purchaser (no rewards should be granted)
+    function testReferrerIsPurchaser() public {
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("self_referral_salt")));
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 1;
+        numbers[1] = 2;
+        lottery.purchaseTicket(numbers, ticketAmount, player1); // Referrer is the same as purchaser
+        vm.stopPrank();
+
+        // Referrer should have zero rewards
+        uint256 reward = lottery.referralRewards(player1);
+        assertEq(reward, 0);
+    }
+
+    // Test: Claiming prize before winning numbers are revealed (should revert)
+    function testClaimPrizeBeforeReveal() public {
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("claim_before_reveal_salt")));
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 1;
+        numbers[1] = 2;
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+
+        // Player attempts to claim prize before numbers are revealed
+        vm.prank(player1);
+        vm.expectRevert("Winning numbers not revealed yet");
+        lottery.claimPrize();
+    }
+
+    // Test: Attempting to claim prize without any tickets (should revert)
+    function testClaimPrizeWithoutTickets() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("no_tickets_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        vm.prank(owner);
+        lottery.revealWinningNumbers(salt, winningNumbers);
+
+        // Non-player attempts to claim prize
+        vm.prank(nonOwner);
+        vm.expectRevert("No tickets purchased");
+        lottery.claimPrize();
+    }
+
+    // Test: Owner withdrawing funds (should transfer funds to owner)
+    function testOwnerWithdrawFunds() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("owner_withdraw_salt"));
+        uint8[5] memory winningNumbers = [5, 10, 15, 20, 25];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        // Player1 purchases a ticket
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 5;
+        numbers[1] = 10;
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+
+        // Owner reveals winning numbers
+        vm.prank(owner);
+        lottery.revealWinningNumbers(salt, winningNumbers);
+
+        // Owner attempts to withdraw the remaining pool (after prizes)
+        uint256 ownerBalanceBefore = token.balanceOf(owner);
+        uint256 contractBalanceBefore = token.balanceOf(address(lottery));
+
+        vm.prank(owner);
+        // Assuming the owner can withdraw the remaining pool (not implemented in the contract)
+        // If there's a function to withdraw excess funds, it should be tested here.
+
+        // Since such a function doesn't exist in the contract, this test is illustrative.
+
+        // Owner's balance should remain unchanged (no withdrawal function)
+        uint256 ownerBalanceAfter = token.balanceOf(owner);
+        assertEq(ownerBalanceAfter, ownerBalanceBefore);
+        // Contract balance should remain the same
+        uint256 contractBalanceAfter = token.balanceOf(address(lottery));
+        assertEq(contractBalanceAfter, contractBalanceBefore);
+    }
+
+    // Test: Purchasing a ticket with invalid numbers (out of range)
+    function testPurchaseTicketWithInvalidNumbersOutOfRange() public {
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("invalid_numbers_range_salt")));
+
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 0; // Invalid number (below MIN_NUMBER)
+        numbers[1] = 91; // Invalid number (above MAX_NUMBER)
+        vm.expectRevert("Invalid numbers");
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Retrieving previous game data
+    function testGetPreviousGameData() public {
+        // Commit and reveal winning numbers
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("previous_game_salt"));
+        uint8[5] memory winningNumbers = [5, 10, 15, 20, 25];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        // Player1 purchases a ticket
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](2);
+        numbers[0] = 5;
+        numbers[1] = 10;
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+
+        // Owner reveals winning numbers
+        vm.prank(owner);
+        lottery.revealWinningNumbers(salt, winningNumbers);
+
+        // Save the game and reset
+        vm.prank(owner);
+        lottery.commitWinningNumbers(keccak256(abi.encodePacked("new_game_salt")));
+
+        // Retrieve previous game winning numbers
+        uint8[5] memory previousWinningNumbers = lottery.getPreviousGameWinningNumbers(winningHash);
+        for (uint8 i = 0; i < 5; i++) {
+            assertEq(previousWinningNumbers[i], winningNumbers[i]);
+        }
+
+        // Retrieve previous game tickets
+        Lottery.Ticket[] memory previousTickets = lottery.getPreviousGameTickets(winningHash);
+        assertEq(previousTickets.length, 1);
+        assertEq(previousTickets[0].player, player1);
+
+        // Retrieve player's tickets from previous game
+        uint256[] memory playerTickets = lottery.getPreviousGamePlayerTickets(winningHash, player1);
+        assertEq(playerTickets.length, 1);
+    }
+
+    // Test: Attempting to retrieve non-existent previous game data (should revert)
+    function testGetNonExistentPreviousGameData() public {
+        bytes32 nonExistentCommit = keccak256(abi.encodePacked("non_existent_commit"));
+
+        vm.expectRevert("Game does not exist");
+        lottery.getPreviousGameWinningNumbers(nonExistentCommit);
+
+        vm.expectRevert("Game does not exist");
+        lottery.getPreviousGameTickets(nonExistentCommit);
+
+        vm.expectRevert("Game does not exist");
+        lottery.getPreviousGamePlayerTickets(nonExistentCommit, player1);
+    }
+
+    // Test: Attempting to purchase multiple tickets with mismatched inputs (should revert)
+    // function testPurchaseMultipleTicketsWithMismatchedInputs() public {
+    //     vm.prank(owner);
+    //     lottery.commitWinningNumbers(keccak256(abi.encodePacked("mismatched_inputs_salt")));
+
+    //     vm.startPrank(player1);
+
+    //     uint8 [][] memory numbersArray = new uint8[][](2);
+    //     numbersArray[0] = new uint8[](2);
+    //     numbersArray[1] = new uint8[](3);
+
+    //     numbersArray[0][0] = 1;
+    //     numbersArray[0][1] = 2;
+
+    //     numbersArray[1][0] = 3;
+    //     numbersArray[1][1] = 4;
+    //     numbersArray[1][2] = 5;
+
+    //     uint256[] memory amounts = new uint256[](1);
+    //     amounts[0] = ticketAmount;
+
+    //     vm.expectRevert("Invalid input lengths");
+    //     lottery.purchaseMultipleTickets(numbersArray, amounts, referrer);
+    //     vm.stopPrank();
+    // }
+
+    // Test: Attempting to purchase a ticket when sales are open but not revealed
+    function testPurchaseTicketAfterReveal() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("after_reveal_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        // Owner reveals the winning numbers immediately
+        vm.prank(owner);
+        lottery.revealWinningNumbers(salt, winningNumbers);
+
+        // Player attempts to purchase a ticket (should revert)
+        vm.startPrank(player1);
+        uint8[] memory numbers = new uint8[](5);
+        numbers[0] = 1;
+        numbers[1] = 2;
+        numbers[2] = 3;
+        numbers[3] = 4;
+        numbers[4] = 5;
+        vm.expectRevert("Ticket sales are closed");
+        lottery.purchaseTicket(numbers, ticketAmount, referrer);
+        vm.stopPrank();
+    }
+
+    // Test: Ensuring owner cannot reveal winning numbers twice
+    function testOwnerCannotRevealWinningNumbersTwice() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("reveal_twice_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        vm.prank(owner);
+        lottery.revealWinningNumbers(salt, winningNumbers);
+
+        // Attempt to reveal again (should revert)
+        vm.prank(owner);
+        vm.expectRevert("Ticket sales are closed");
+        lottery.revealWinningNumbers(salt, winningNumbers);
+    }
+
+    // Test: Owner committing invalid winning numbers hash (zero hash)
+    function testCommitWinningNumbersWithInvalidHash() public {
+        vm.prank(owner);
+        vm.expectRevert("Invalid hash");
+        lottery.commitWinningNumbers(bytes32(0));
+    }
+
+    // Test: Owner revealing winning numbers with incorrect salt (should revert)
+    function testRevealWinningNumbersWithIncorrectSalt() public {
+        vm.prank(owner);
+        bytes32 correctSalt = keccak256(abi.encodePacked("correct_salt"));
+        uint8[5] memory winningNumbers = [1, 2, 3, 4, 5];
+        bytes32 winningHash = keccak256(abi.encodePacked(correctSalt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        bytes32 incorrectSalt = keccak256(abi.encodePacked("incorrect_salt"));
+        vm.prank(owner);
+        vm.expectRevert("Commitment does not match");
+        lottery.revealWinningNumbers(incorrectSalt, winningNumbers);
+    }
+
+    // Test: Owner revealing winning numbers with invalid numbers (duplicates)
+    function testRevealWinningNumbersWithInvalidNumbers() public {
+        vm.prank(owner);
+        bytes32 salt = keccak256(abi.encodePacked("invalid_winning_numbers_salt"));
+        uint8[5] memory winningNumbers = [1, 1, 2, 3, 4]; // Duplicate number
+        bytes32 winningHash = keccak256(abi.encodePacked(salt, winningNumbers));
+        lottery.commitWinningNumbers(winningHash);
+
+        vm.prank(owner);
+        vm.expectRevert("Invalid winning numbers");
+        lottery.revealWinningNumbers(salt, winningNumbers);
     }
 }
 

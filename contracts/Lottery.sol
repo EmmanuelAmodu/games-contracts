@@ -101,7 +101,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amount The amount of tokens to stake
     /// @param referrer The address of the referrer
-    function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenOpen nonReentrant whenNotPaused {
+    function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenNotPaused whenOpen nonReentrant {
         uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
         uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
     
@@ -126,7 +126,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @param numbers An array of arrays, each containing unique numbers between MIN_NUMBER and MAX_NUMBER
     /// @param amounts An array of amounts for each ticket
     /// @param referrer The address of the referrer
-    function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenOpen nonReentrant whenNotPaused {
+    function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenNotPaused whenOpen nonReentrant {
         uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
         uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
 
@@ -180,7 +180,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Owner commits to the winning numbers using a hash
     /// @param _winningNumbersHash The keccak256 hash of the salt and winning numbers
-    function commitWinningNumbers(bytes32 _winningNumbersHash) external onlyOwner whenNotOpen nonReentrant whenNotPaused {
+    function commitWinningNumbers(bytes32 _winningNumbersHash) external whenNotPaused onlyOwner whenNotOpen nonReentrant {
         _saveGameAndReset(winningNumbersHash);
         require(_winningNumbersHash != bytes32(0), "Invalid hash");
         winningNumbersHash = _winningNumbersHash;
@@ -195,7 +195,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     function revealWinningNumbers(
         bytes32 salt,
         uint8[NUM_BALLS] calldata numbers
-    ) external onlyOwner whenOpen nonReentrant whenNotPaused {
+    ) external whenNotPaused onlyOwner whenOpen nonReentrant {
         require(!isRevealed, "Winning numbers already revealed");
 
         // Convert the fixed-size array to a dynamic array for validation
@@ -226,7 +226,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Players claim their prizes based on their tickets
-    function claimPrize() external whenRevealed nonReentrant whenNotPaused {
+    function claimPrize() external whenNotPaused whenRevealed nonReentrant {
         require(playerTickets[msg.sender].length > 0, "No tickets purchased");
         require(isRevealed, "Winning numbers not revealed yet");
 
@@ -244,12 +244,13 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
         require(totalPrize > 0, "No prizes to claim");
         token.safeTransfer(msg.sender, totalPrize);
+        totalPool -= totalPrize; // Decrement the total pool by the prize amount
         emit PrizeClaimed(msg.sender, winningNumbersHash, totalPrize);
     }
 
     /// @notice Allows players to claim their prizes from a previous game
     /// @param commit The unique commit hash identifying the game
-    function claimPrize(bytes32 commit) external nonReentrant whenNotPaused {
+    function claimPrize(bytes32 commit) external whenNotPaused nonReentrant {
         require(previousGames[commit].winningNumbers[0] != 0, "Game does not exist");
         require(previousGames[commit].playerTickets[msg.sender].length > 0, "No tickets purchased");
 
@@ -267,6 +268,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
         require(totalPrize > 0, "No prizes to claim");
         token.safeTransfer(msg.sender, totalPrize);
+        totalPool -= totalPrize; // Decrement the total pool by the prize amount
         emit PrizeClaimed(msg.sender, winningNumbersHash, totalPrize);
     }
 
@@ -408,7 +410,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Allows the referral rewards to be claimed by the referrer
-    function claimReferralRewards() external nonReentrant whenNotPaused {
+    function claimReferralRewards() external whenNotPaused nonReentrant {
         uint256 reward = referralRewards[msg.sender];
         require(reward > 0, "No referral rewards to claim");
 
@@ -418,7 +420,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Update referralRewardPercent amount
     /// @param percentAmount The new referral reward percentage (must be between 1 and 10)
-    function updateReferralRewardPercent(uint8 percentAmount) external onlyOwner whenNotPaused {
+    function updateReferralRewardPercent(uint8 percentAmount) external whenNotPaused onlyOwner {
         require(percentAmount > 0 && percentAmount <= 10, "Invalid percent amount");
         referralRewardPercent = percentAmount;
         emit ReferralRewardPercentUpdated(percentAmount);
@@ -490,5 +492,32 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     /// @notice Emergency function to reset the lottery in case of unforeseen circumstances
     function emergencyReset() external onlyOwner whenPaused {
         _resetLottery();
+    }
+
+    function withdrawTokens(uint256 amount) external onlyOwner nonReentrant() {
+        require(amount > 0, "Amount must be greater than 0");
+    
+        uint256 contractBalance = token.balanceOf(address(this));
+        uint256 availableBalance = contractBalance - totalPool; // Exclude players' funds
+        require(amount <= availableBalance, "Amount exceeds available balance");
+    
+        totalPool -= amount;
+        token.safeTransfer(owner(), amount);
+    }
+
+    function depositTokens(uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "Amount must be greater than 0");
+        token.safeTransferFrom(owner(), address(this), amount);
+        totalPool += amount;
+    }
+
+    /// @notice Pause the contract
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        _unpause();
     }
 }
