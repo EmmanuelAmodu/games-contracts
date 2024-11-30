@@ -354,6 +354,7 @@ contract LotteryV03 is Ownable, ReentrancyGuard, Pausable {
     function _deposit(uint256 amount) internal {
         uint256 deadline = block.timestamp + 300; // 5 minutes from now
         USDC.safeTransferFrom(msg.sender, address(this), amount);
+        USDC.approve(address(transmuter), amount);
         uint256 amountOut = transmuter.swapExactInput(
             amount,
             amount,
@@ -370,6 +371,7 @@ contract LotteryV03 is Ownable, ReentrancyGuard, Pausable {
     function _withdraw(uint256 amount) internal {
         uint256 deadline = block.timestamp + 300; // 5 minutes from now
         uint256 amountOut = stUSD.redeem(amount, address(this), address(this));
+        stUSD.approve(address(transmuter), amount);
         uint256 finalOut = transmuter.swapExactInput(
             amountOut,
             amountOut,

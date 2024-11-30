@@ -5,16 +5,11 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract FreePlayToken is ERC20, ReentrancyGuard {
-    uint256 public constant ALLOCATION = 10000 ether;
-    mapping(address => uint256) public lastMinted;
-
     constructor() ERC20("FreePlay", "FPT") {}
  
-    function mint() public nonReentrant {
-        require(balanceOf(msg.sender) < 1 ether, "Must exhaust allocation before minting again");
-
-        lastMinted[msg.sender] = block.timestamp;
-        _mint(msg.sender, ALLOCATION);
+    function mint(uint256 amount) public nonReentrant {
+        require(amount > 0, "Amount must be greater than 0");
+        _mint(msg.sender, amount);
     }
 
     function burn(uint256 amount) public nonReentrant {
