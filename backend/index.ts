@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { parseArgs } from "node:util";
 import { lotteryAbi } from "./abis/lottery.abi";
 require("dotenv").config();
+import * as crypto from "node:crypto";
 
 const { values } = parseArgs({
   args: Bun.argv,
@@ -131,8 +132,7 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
     let index = 0;
 
     while (index < winningNumbers.length) {
-      const rand = ethers.randomBytes(16);
-      const num = Number.parseInt(rand.toString(), 16) % 90 + 1;
+      const num = crypto.randomInt(1, 90);
       if(!winningNumbers.includes(num)) {
         winningNumbers[index] = num;
         index++;
