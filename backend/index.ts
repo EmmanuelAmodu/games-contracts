@@ -1,20 +1,33 @@
-import { ethers } from "ethers";
 import { parseArgs } from "node:util";
+import { lotteryFactoryAbi } from "./abis/lotteryFactory.abi";
 import { lotteryAbi } from "./abis/lottery.abi";
 require("dotenv").config();
 import * as crypto from "node:crypto";
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  type Hex,
+  publicActions,
+  getContract,
+  type Address,
+  encodePacked,
+  keccak256,
+  isHex,
+  size,
+  bytesToHex,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { anvil, base, baseSepolia, liskSepolia, lisk } from "viem/chains";
 
 const { values } = parseArgs({
   args: Bun.argv,
   options: {
     commit: {
-      type: 'boolean',
+      type: "boolean",
     },
     reveal: {
-      type: 'boolean',
-    },
-    reset: {
-      type: 'boolean',
+      type: "boolean",
     },
   },
   strict: true,
@@ -29,28 +42,35 @@ const GAME_VALUE_FILE = process.env.GAME_VALUE_FILE;
 
 // Validate Environment Variables
 if (!PRIVATE_KEY || !RPC_URL || !CONTRACT_ADDRESS || !GAME_VALUE_FILE) {
-  throw new Error("Please set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS in the .env file");
+  throw new Error(
+    "Please set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS in the .env file"
+  );
 }
 
-// Initialize Provider and Signer
-const provider = new ethers.JsonRpcProvider(RPC_URL);
-const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+export const publicClient = createPublicClient({
+  batch: {
+    multicall: true,
+  },
+  transport: http(RPC_URL),
+});
+
+const account = privateKeyToAccount(PRIVATE_KEY as Hex);
+const walletClient = createWalletClient({
+  account: account,
+  transport: http(RPC_URL),
+}).extend(publicActions);
 
 // Initialize Contract Instance
-const lotteryContract = new ethers.Contract(CONTRACT_ADDRESS, lotteryAbi, wallet);
+const lotteryFactoryContract = getContract({
+  address: CONTRACT_ADDRESS as Hex,
+  abi: lotteryFactoryAbi,
+  // 1b. Or public and/or wallet clients
+  client: { public: publicClient, wallet: walletClient },
+});
 
-/**
- * Generates the winning numbers hash to commit to the Lottery contract.
- * @param {string} saltHex - A 66-character hexadecimal string starting with '0x' representing the salt (bytes32).
- * @param {number[]} numbers - An array of 5 unique uint8 numbers between 1 and 90.
- * @returns {string} - The keccak256 hash as a 66-character hexadecimal string.
- */
 function generateWinningNumbersHash(saltHex: string, numbers: number[]): string {
   // Validate the salt
-  if (
-    !ethers.isHexString(saltHex) ||
-    ethers.dataLength(saltHex) !== 32
-  ) {
+  if (!isHex(saltHex) || size(saltHex) !== 32) {
     throw new Error(
       "Invalid salt: Must be a 32-byte hex string starting with 0x"
     );
@@ -62,7 +82,7 @@ function generateWinningNumbersHash(saltHex: string, numbers: number[]): string 
   }
 
   // Ensure numbers are unique and within the valid range
-  const numberSet = new Set();
+  const numberSet = new Set<number>();
   for (const num of numbers) {
     if (!Number.isInteger(num) || num < 1 || num > 90) {
       throw new Error("Each number must be an integer between 1 and 90");
@@ -74,47 +94,74 @@ function generateWinningNumbersHash(saltHex: string, numbers: number[]): string 
   }
 
   // Prepare the types and values for encoding
-  const types = ["bytes32", "uint8", "uint8", "uint8", "uint8", "uint8"];
-  const values = [saltHex, ...numbers];
+  const types = ["bytes32", "uint8[5]"];
+  const values = [saltHex, numbers];
 
-  // Encode the data using abi.encodePacked equivalent in Ethers.js
-  const encodedData = ethers.solidityPacked(types, values);
+  // Encode the data using abi.encodePacked equivalent in viem
+  const encodedData = encodePacked(types, values);
 
   // Compute the keccak256 hash
-  const hash = ethers.keccak256(encodedData);
+  const hash = keccak256(encodedData);
 
   return hash;
 }
 
-/**
- * Commits the winning numbers hash to the Lottery contract.
- * @param {string} hash - The keccak256 hash of the salt and winning numbers.
- */
 async function commitWinningNumbers(hash: string) {
   try {
-    const tx = await lotteryContract.commitWinningNumbers(hash);
-    console.log("Transaction submitted. Hash:", tx.hash);
-    await tx.wait();
+    const tokenAddress = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+    const tx = await lotteryFactoryContract.write.deployLottery(
+      [tokenAddress as Address, hash as Hex],
+      {
+        chain: anvil,
+      }
+    );
+
+    lotteryFactoryContract.watchEvent.LotteryDeployed(
+      {},
+      {
+        onLogs: (logs) => {
+          console.log(logs);
+        },
+      }
+    );
+
+    console.log("Transaction submitted. Hash:", tx);
     console.log("commitWinningNumbers transaction confirmed.");
   } catch (error) {
     console.error("Error committing winning numbers:", error);
   }
 }
 
-/**
- * Reveals the winning numbers by providing the salt and the actual numbers.
- * @param {string} saltHex - The original salt used to generate the hash.
- * @param {number[]} numbers - The array of winning numbers.
- */
 async function revealWinningNumbers(saltHex: string, numbers: number[]) {
   try {
-    const tx = await lotteryContract.revealWinningNumbers(
-      saltHex,
-      numbers
+    const lotteryAddress = await lotteryFactoryContract.read.currentLottery();
+    const lotteryContract = getContract({
+      address: lotteryAddress,
+      abi: lotteryAbi,
+      client: { public: publicClient, wallet: walletClient },
+    });
+
+    const tx = await lotteryContract.write.revealWinningNumbers(
+      [
+        saltHex as Hex,
+        numbers as unknown as readonly [number, number, number, number, number],
+      ],
+      {
+        chain: anvil,
+      }
     );
-    console.log("Transaction submitted. Hash:", tx.hash);
-    await tx.wait();
-    console.log("revealWinningNumbers transaction confirmed.");
+
+    console.log("Transaction submitted. Hash:", tx);
+
+    lotteryContract.watchEvent.WinningNumbersRevealed(
+      {},
+      {
+        onLogs: (logs) => {
+          console.log("revealWinningNumbers transaction confirmed.");
+          console.log(logs);
+        },
+      }
+    );
   } catch (error) {
     console.error("Error revealing winning numbers:", error);
   }
@@ -126,23 +173,26 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
     console.log("Committing winning numbers...");
 
     // Generate a random salt (bytes32)
-    const randomBytes = ethers.randomBytes(32);
-    const saltHex = ethers.hexlify(randomBytes);
+    const randomBytes = crypto.getRandomValues(new Uint8Array(32));
+    const saltHex = bytesToHex(randomBytes);
 
     // Define your winning numbers (ensure they are unique and within 1-90)
-    const winningNumbers = [0, 0, 0, 0, 0]
+    const winningNumbers = [0, 0, 0, 0, 0];
 
     let index = 0;
 
     while (index < winningNumbers.length) {
       const num = crypto.randomInt(1, 90);
-      if(!winningNumbers.includes(num)) {
+      if (!winningNumbers.includes(num)) {
         winningNumbers[index] = num;
         index++;
       }
     }
 
-    await Bun.write(GAME_VALUE_FILE, JSON.stringify({ saltHex, winningNumbers }));
+    await Bun.write(
+      GAME_VALUE_FILE,
+      JSON.stringify({ saltHex, winningNumbers })
+    );
 
     // Generate the hash
     const winningNumbersHash = generateWinningNumbersHash(
@@ -164,13 +214,5 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
 
     // Reveal the winning numbers
     await revealWinningNumbers(saltHex, winningNumbers);
-  }
-
-  if (values.reset) {
-    console.log("Resetting the game...");
-    // await lotteryContract.pause();
-    // await lotteryContract.emergencyReset();
-    await lotteryContract.unpause();
-    console.log("Game has been reset.");
   }
 })();
