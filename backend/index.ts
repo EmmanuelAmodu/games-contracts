@@ -13,6 +13,9 @@ const { values } = parseArgs({
     reveal: {
       type: 'boolean',
     },
+    reset: {
+      type: 'boolean',
+    },
   },
   strict: true,
   allowPositionals: true,
@@ -157,7 +160,17 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
     const data = await Bun.file(GAME_VALUE_FILE).text();
     const { saltHex, winningNumbers } = JSON.parse(data);
 
+    console.log(saltHex, winningNumbers);
+
     // Reveal the winning numbers
     await revealWinningNumbers(saltHex, winningNumbers);
+  }
+
+  if (values.reset) {
+    console.log("Resetting the game...");
+    // await lotteryContract.pause();
+    // await lotteryContract.emergencyReset();
+    await lotteryContract.unpause();
+    console.log("Game has been reset.");
   }
 })();

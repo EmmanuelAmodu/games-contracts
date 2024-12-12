@@ -17,9 +17,6 @@ contract FreeToPlayLotteryDeployer is Script {
 
         FreePlayToken freePlay = new FreePlayToken();
         console.log("FreePlayLottery deployed at:", address(freePlay));
-    
-        Lottery lottery = new Lottery(initialOwner, address(freePlay));
-        console.log("Lottery deployed at:", address(lottery));
 
         vm.stopBroadcast();
     }
