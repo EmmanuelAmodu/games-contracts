@@ -16,9 +16,18 @@ import {
   isHex,
   size,
   bytesToHex,
+  type Chain,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { anvil, base, baseSepolia, liskSepolia, lisk } from "viem/chains";
+
+const chainMap: Record<number, Chain> = {
+  [anvil.id]: anvil,
+  [base.id]: base,
+  [baseSepolia.id]: baseSepolia,
+  [liskSepolia.id]: liskSepolia,
+  [lisk.id]: lisk,
+}
 
 const { values } = parseArgs({
   args: Bun.argv,
@@ -39,13 +48,16 @@ const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const RPC_URL = process.env.RPC_URL;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const GAME_VALUE_FILE = process.env.GAME_VALUE_FILE;
+const CHAIN_ID = process.env.CHAIN_ID;
 
 // Validate Environment Variables
-if (!PRIVATE_KEY || !RPC_URL || !CONTRACT_ADDRESS || !GAME_VALUE_FILE) {
+if (!PRIVATE_KEY || !RPC_URL || !CONTRACT_ADDRESS || !GAME_VALUE_FILE || !CHAIN_ID) {
   throw new Error(
     "Please set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS in the .env file"
   );
 }
+
+const chainId = Number.parseInt(process.env.CHAIN_ID || anvil.id.toString());
 
 export const publicClient = createPublicClient({
   batch: {
@@ -112,7 +124,7 @@ async function commitWinningNumbers(hash: string) {
     const tx = await lotteryFactoryContract.write.deployLottery(
       [tokenAddress as Address, hash as Hex],
       {
-        chain: anvil,
+        chain: chainMap[chainId],
       }
     );
 
@@ -147,7 +159,7 @@ async function revealWinningNumbers(saltHex: string, numbers: number[]) {
         numbers as unknown as readonly [number, number, number, number, number],
       ],
       {
-        chain: anvil,
+        chain: chainMap[chainId],
       }
     );
 
