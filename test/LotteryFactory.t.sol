@@ -99,7 +99,7 @@ contract LotteryFactoryTest is Test {
         assertEq(factory.lotteries(winningHash1), deployedLottery);
 
         // Verify that the Lottery is added to the allLotteries array
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 1);
         assertEq(lotteries.length, 1);
         assertEq(lotteries[0], deployedLottery);
 
@@ -167,7 +167,7 @@ contract LotteryFactoryTest is Test {
         assertEq(factory.lotteries(winningHash3), lottery3);
 
         // Verify that all Lotteries are in the allLotteries array
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 3);
         assertEq(lotteries.length, 3);
         assertEq(lotteries[0], lottery1);
         assertEq(lotteries[1], lottery2);
@@ -252,7 +252,7 @@ contract LotteryFactoryTest is Test {
         assertEq(factory.lotteries(winningHash2), lottery2);
 
         // Ensure that getAllLotteries returns both
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 2);
         assertEq(lotteries.length, 2);
         assertEq(lotteries[0], lottery1);
         assertEq(lotteries[1], lottery2);
@@ -320,7 +320,7 @@ contract LotteryFactoryTest is Test {
         vm.prank(owner);
         address lottery2 = factory.deployLottery(address(token), winningHash2);
 
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 2);
         assertEq(lotteries.length, 2);
         assertEq(lotteries[0], lottery1);
         assertEq(lotteries[1], lottery2);
@@ -369,7 +369,7 @@ contract LotteryFactoryTest is Test {
         }
 
         // Verify that all Lotteries are in the allLotteries array
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 5);
         assertEq(lotteries.length, 5);
         for (uint8 i = 0; i < 5; i++) {
             assertEq(lotteries[i], deployedLotteries[i]);
@@ -490,7 +490,7 @@ contract LotteryFactoryTest is Test {
         factory.deployLottery(address(token), winningHash3);
 
         // Retrieve all deployed Lotteries
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 3);
         assertEq(lotteries.length, 3);
     }
 
@@ -557,7 +557,7 @@ contract LotteryFactoryTest is Test {
         }
 
         // Verify all Lotteries are in the allLotteries array
-        address[] memory lotteries = factory.getAllLotteries();
+        address[] memory lotteries = factory.getAllLotteries(0, 5);
         assertEq(lotteries.length, 5);
         for (uint8 i = 0; i < 5; i++) {
             assertEq(lotteries[i], deployedLotteries[i]);

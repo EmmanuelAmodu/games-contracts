@@ -93,7 +93,14 @@ contract LotteryFactory is Ownable {
 
     /// @notice Retrieves all deployed Lottery contract addresses
     /// @return lotteriesList An array of all Lottery contract addresses deployed by the factory
-    function getAllLotteries() external view returns (address[] memory lotteriesList) {
-        lotteriesList = allLotteries;
+    function getAllLotteries(uint256 start, uint256 end) external view returns (address[] memory) {
+        // lotteriesList = allLotteries;
+        uint256 length = end - start;
+        address[] memory lotteriesList = new address[](length);
+        for (uint256 i = 0; i < length; i++) {
+            lotteriesList[i] = allLotteries[start + i];
+        }
+
+        return lotteriesList;
     }
 }
