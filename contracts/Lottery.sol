@@ -88,7 +88,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         winningNumbersHash = _winningNumbersHash;
         isOpen = true; // Open ticket sales
         isRevealed = false;
-        drawTimestamp = block.timestamp;
+        drawTimestamp = block.timestamp + 1 days; // Set the draw timestamp to 24 hours from deployment
         token = IERC20(_token);
         tokenDecimals = IERC20Metadata(_token).decimals(); // IERC20Metadata includes decimals()
         referralRewardPercent = 10;
@@ -364,6 +364,13 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     
         totalPool -= amount;
         token.safeTransfer(owner(), amount);
+    }
+
+    /// @notice Withdraw all remaining tokens after cashout deadline
+    function withdrawTokensAllFundsAfterCashoutDeadline() external onlyOwner nonReentrant() {
+        require(block.timestamp > drawTimestamp + 3 days, "Cashout deadline not reached");
+        uint256 contractBalance = token.balanceOf(address(this));
+        token.safeTransfer(owner(), contractBalance);
     }
 
     /// @notice Deposit tokens into the contract

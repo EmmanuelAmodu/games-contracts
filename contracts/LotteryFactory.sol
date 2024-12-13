@@ -14,10 +14,7 @@ contract LotteryFactory is Ownable {
     // Event emitted when a new Lottery contract is deployed
     event LotteryDeployed(
         address indexed lotteryAddress,
-        address indexed owner,
-        address indexed token,
-        bytes32 salt,
-        bytes32 winningNumbersHash
+        bytes32 indexed winningNumbersHash
     );
 
     // Counter to ensure unique salts
@@ -64,7 +61,7 @@ contract LotteryFactory is Ownable {
         allLotteries.push(lotteryAddress);
 
         currentLottery = lotteryAddress;
-        emit LotteryDeployed(lotteryAddress, owner(), token, _winningNumbersHash, _winningNumbersHash);
+        emit LotteryDeployed(lotteryAddress, _winningNumbersHash);
     }
 
     /// @notice Computes the address of a Lottery contract to be deployed with given parameters
