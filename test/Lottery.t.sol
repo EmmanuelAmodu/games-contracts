@@ -732,18 +732,17 @@ contract LotteryTest is Test {
         lottery.claimPrize();
 
         // Owner withdraws some tokens
-        uint256 availableBalance = token.balanceOf(address(lottery)) - lottery.totalPool();
-        console.log("Available balance:", availableBalance);
-        console.log("token.balanceOf(address(lottery)):", token.balanceOf(address(lottery)));
-        console.log("lottery.totalPool():", lottery.totalPool());
+        uint256 availableBalance = token.balanceOf(address(lottery));
 
         uint256 ownerBalanceBefore = token.balanceOf(owner);
+        vm.warp(lottery.drawTimestamp() + 4 days);
         vm.prank(owner);
-        lottery.withdrawTokens(availableBalance);
+        lottery.withdrawTokensAllFundsAfterCashoutDeadline();
 
         // Check owner's token balance
         uint256 ownerBalance = token.balanceOf(owner);
-        assertEq(ownerBalance, ownerBalanceBefore + availableBalance);
+        assertEq(token.balanceOf(address(lottery)), 0, "All funds should be withdrawn");
+        assertEq(ownerBalance, ownerBalanceBefore + availableBalance, "Owner should receive all available funds");
     }
 }
 

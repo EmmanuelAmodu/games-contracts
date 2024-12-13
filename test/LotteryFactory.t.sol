@@ -208,7 +208,7 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that the LotteryDeployed event is emitted with correct parameters
     function testLotteryDeployedEvent() public {
         vm.expectEmit(false, true, true, true);
-        emit LotteryFactory.LotteryDeployed(address(0), owner, address(token), winningHash1, winningHash1);
+        emit LotteryFactory.LotteryDeployed(address(0), winningHash1);
 
         vm.prank(owner);
         address deployedLottery = factory.deployLottery(address(token), winningHash1);
@@ -441,7 +441,7 @@ contract LotteryFactoryTest is Test {
     function testLotteryDeployedEventEmission() public {
         // Expect the LotteryDeployed event with specific parameters
         vm.expectEmit(false, true, true, true);
-        emit LotteryFactory.LotteryDeployed(address(0), owner, address(token), winningHash1, winningHash1);
+        emit LotteryFactory.LotteryDeployed(address(0), winningHash1);
 
         // Deploy the Lottery
         vm.prank(owner);

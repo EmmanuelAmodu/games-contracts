@@ -353,19 +353,6 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         emit ReferralRewardPercentUpdated(percentAmount);
     }
 
-    /// @notice Withdraw the tokens from the contract
-    /// @param amount The amount of tokens to withdraw
-    function withdrawTokens(uint256 amount) external onlyOwner nonReentrant() {
-        require(amount > 0, "Amount must be greater than 0");
-    
-        uint256 contractBalance = token.balanceOf(address(this));
-        uint256 availableBalance = contractBalance - totalPool; // Exclude players' funds
-        require(amount <= availableBalance, "Amount exceeds available balance");
-    
-        totalPool -= amount;
-        token.safeTransfer(owner(), amount);
-    }
-
     /// @notice Withdraw all remaining tokens after cashout deadline
     function withdrawTokensAllFundsAfterCashoutDeadline() external onlyOwner nonReentrant() {
         require(block.timestamp > drawTimestamp + 3 days, "Cashout deadline not reached");
