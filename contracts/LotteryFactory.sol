@@ -40,7 +40,7 @@ contract LotteryFactory is Ownable {
     function deployLottery(
         address token,
         bytes32 _winningNumbersHash
-    ) external onlyOwner returns (address lotteryAddress) {
+    ) external returns (address lotteryAddress) {
         require(token != address(0), "Token address cannot be zero");
         require(_winningNumbersHash != bytes32(0), "Winning numbers hash cannot be zero");
 
@@ -50,7 +50,7 @@ contract LotteryFactory is Ownable {
         // Encode the constructor arguments
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), token, _winningNumbersHash)
+            abi.encode(owner(), token, _winningNumbersHash, msg.sender)
         );
 
         // Deploy the Lottery contract using CREATE2

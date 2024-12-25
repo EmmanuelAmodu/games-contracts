@@ -1,379 +1,550 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.17;
 
-// Import OpenZeppelin contracts for security and access control
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
-/// @title Lottery Contract with All-or-Nothing Prize Distribution
-/// @author Emmanuel Amodu
-/// @notice This contract implements a lottery where players win only if all their selected numbers match the winning numbers.
-contract Lottery is Ownable, ReentrancyGuard, Pausable {
+import "./MerkleLotteryDistribution.sol";
+
+/**
+ * @title Lottery with Dynamic Rollover Distribution
+ * @notice This version:
+ *         1) Uses only USDC for payments (no stUSD or transmuter).
+ *         2) Fixes ticket cost at exactly 1 USDC each.
+ *         3) Allows up to 100 tickets per purchase and 100 total per player.
+ *         4) Dynamically rolls unused portions if some match groups have no winners.
+ *         5) Reserves 10% of the total pool as "house revenue"; 90% is distributed.
+ */
+contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistribution {
     using SafeERC20 for IERC20;
 
-    // State variables
-    IERC20 public token;                                  // Protocol token used for the lottery
-    uint256 public totalPool;                             // Total amount of tokens in the pool
-    bytes32 public winningNumbersHash;                    // Commitment to the winning numbers
-    bool public isRevealed;                               // Indicates if winning numbers have been revealed
-    bool public isOpen;                                   // Indicates if ticket sales are open
-    uint256 public drawTimestamp;                         // Timestamp when draw occurs
-    uint256 public constant MAX_TICKET_PRICE = 1000;      // Maximum ticket price
-    uint256 public constant MIN_TICKET_PRICE = 1;         // Minimum ticket price
-    uint256 public constant MAX_TICKETS_PER_PLAYER = 100; // Maximum number of tickets per player
+    // ------------------------------------------------------------------
+    // Constants / Configuration
+    // ------------------------------------------------------------------
 
-    // Player tracking
-    address[] public players;                     // List of all player addresses
-    mapping(address => bool) public hasPurchased; // Tracks if a player has purchased a ticket
+    uint8 public constant NUM_BALLS = 5;
+    uint8 public constant MIN_NUMBER = 1;
+    uint8 public constant MAX_NUMBER = 90;
 
-    // Mappings
-    mapping(address => uint256[]) public playerTickets;    // Player address to their tickets
-    mapping(address => uint256) public referralRewards;    // Player address to their referral rewards
-    Ticket[] public allTickets;                            // Array of all tickets
+    // Each ticket costs exactly 1 USDC
+    // Max 100 tickets total for each player
+    uint256 public constant TICKETS_PER_PLAYER_MAX = 100; 
 
-    uint8 public constant MAX_NUMBER = 90;  // Maximum number for the lottery
-    uint8 public constant MIN_NUMBER = 1;   // Minimum number for the lottery
-    uint8 public constant NUM_BALLS = 5;    // Number of balls in the draw
-    uint8 public referralRewardPercent;     // percent of ticket price as referral reward
-    uint8 public tokenDecimals;             // Decimals of the protocol token
+    // We distribute 90% among these match categories:
+    //    5 matches -> 40%
+    //    4 matches -> 20%
+    //    3 matches -> 15%
+    //    2 matches -> 10%
+    //    1 match   -> 5%
+    // Sum = 90%
+    uint256[5] public baseDistribution = [40, 20, 15, 10, 5];
+    // baseDistribution[0] = 40% (for 5 matches)
+    // baseDistribution[1] = 20% (for 4 matches)
+    // baseDistribution[2] = 15% (for 3 matches)
+    // baseDistribution[3] = 10% (for 2 matches)
+    // baseDistribution[4] = 5%  (for 1 match)
 
-    // Winning numbers
-    uint8[NUM_BALLS] public winningNumbers; // Winning numbers
+    // ------------------------------------------------------------------
+    // State Variables
+    // ------------------------------------------------------------------
 
+    // The USDC token (assumed to have 6 decimals in typical usage)
+    IERC20 public USDC;
+    // We store the sum of all ticket payments (in USDC terms) in `totalPool`.
+    uint256 public totalPool; 
+    // For convenience, we read the token's decimals (e.g. 6 for USDC).
+    uint8 public tokenDecimals;
+
+    // Lottery states
+    bool public isOpen;             // Whether ticket purchases are open
+    bool public isRevealed;         // Whether winning numbers have been revealed
+    uint256 public drawTimestamp;   // Timestamp used for deadlines
+    bytes32 public winningNumbersHash;
+    uint8[NUM_BALLS] public winningNumbers;
+
+    // Tickets
     struct Ticket {
-        uint8[] numbers;    // Player's selected numbers
-        address player;     // Player's address
-        bool claimed;       // Whether the prize has been claimed
-        uint256 amount;     // Amount of tokens staked
-        uint256 prize;      // Prize amount for the ticket in tokens
+        uint8[] numbers; 
+        address player; 
+        bool claimed;   
+        uint256 prize;  
+        uint8 matches;  
     }
 
+    Ticket[] public allTickets;                 // All tickets across all users
+    mapping(address => uint256[]) public playerTickets; 
+    mapping(address => bool) public hasPurchased;
+    address[] public players;
+
+    // Referral
+    mapping(address => uint256) public referralRewards;
+    uint8 public referralRewardPercent;
+
+    // Match counts (how many tickets matched exactly 0..5 numbers)
+    uint256[6] public matchCounts;
+
+    // How much is allocated to each match group (0..5) out of the 90%
+    uint256[6] public matchPools;
+
+    // Distribution phases
+    enum DistPhase { None, Counting, Counted, Awarding, Done }
+    DistPhase public distPhase;
+
+    // Batching indexes
+    uint256 public nextTicketToCount;
+    uint256 public nextTicketToAward;
+
+    // ------------------------------------------------------------------
     // Events
-    event TicketPurchased(address indexed player, bytes32 indexed commit, uint256 ticketId, uint8[] numbers);
-    event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers, bytes32 indexed commit);
-    event PrizeClaimed(address indexed player, bytes32 indexed commit, uint256 amount);
-    event NoPrizeToClaimed(address indexed player, bytes32 indexed commit, uint256 amount);
-    event GameSaved(bytes32 indexed commit, uint256 totalPool, uint256 drawTimestamp);
+    // ------------------------------------------------------------------
+
+    event TicketPurchased(address indexed player, uint256 ticketId, uint8[] numbers);
+    event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers);
+    event DistributionPhaseChanged(DistPhase phase);
+    event BatchProcessed(uint256 startIndex, uint256 endIndex, DistPhase phase);
+
+    event PrizeClaimed(address indexed player, uint256 ticketId, uint256 amount);
+    event NoPrizeToClaim(address indexed player, uint256 ticketId);
     event ReferralRewardClaimed(address indexed referrer, uint256 amount);
-    event LotteryReset(bytes32 indexed commit);
     event ReferralRewardPercentUpdated(uint8 newPercent);
-    event TokenAddressChanged(address newToken);
 
-    modifier whenNotOpen() {
-        require(!isOpen, "Ticket sales are still open");
-        _;
-    }
+    // ------------------------------------------------------------------
+    // Constructor
+    // ------------------------------------------------------------------
 
-    modifier whenOpen() {
-        require(isOpen, "Ticket sales are closed");
-        _;
-    }
-
-    modifier whenRevealed() {
-        require(isRevealed, "Winning numbers not revealed yet");
-        _;
-    }
-
-    /// @notice Initialize the contract with the owner address.
-    /// @param initialOwner The address of the initial owner
-    /// @param _token The address of the protocol ERC20 token
-    constructor(address initialOwner, address _token, bytes32 _winningNumbersHash) Ownable(initialOwner) {
-        require(_token != address(0), "Invalid token address");
+    /**
+     * @param initialOwner The owner of this contract.
+     * @param _winningNumbersHash Commitment hash for the winning numbers.
+     * @param _usdc The address of the USDC token.
+     */
+    constructor(
+        address initialOwner,
+        bytes32 _winningNumbersHash,
+        address _usdc
+    ) Ownable(initialOwner) MerkleLotteryDistribution(_usdc) {
+        require(_usdc != address(0), "Invalid USDC address");
         require(_winningNumbersHash != bytes32(0), "Invalid hash");
-    
+
         winningNumbersHash = _winningNumbersHash;
-        isOpen = true; // Open ticket sales
+        USDC = IERC20(_usdc);
+        tokenDecimals = IERC20Metadata(_usdc).decimals();
+        referralRewardPercent = 1; // e.g. 1%
+
+        // Initialize lottery
+        isOpen = true;
         isRevealed = false;
-        drawTimestamp = block.timestamp + 1 days; // Set the draw timestamp to 24 hours from deployment
-        token = IERC20(_token);
-        tokenDecimals = IERC20Metadata(_token).decimals(); // IERC20Metadata includes decimals()
-        referralRewardPercent = 10;
+        // e.g. let users buy tickets for 1 day
+        drawTimestamp = block.timestamp + 1 days;
+        distPhase = DistPhase.None;
     }
 
-    /// @notice Allows players to purchase a ticket with selected numbers
-    /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
-    /// @param amount The amount of tokens to stake
-    /// @param referrer The address of the referrer
-    function purchaseTicket(uint8[] calldata numbers, uint256 amount, address referrer) external whenNotPaused whenOpen nonReentrant {
-        uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
-        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
-    
-        require(amount >= minTicketPrice && amount <= maxTicketPrice, "Invalid amount: must be between 1 and 1000");
-        token.safeTransferFrom(msg.sender, address(this), amount);
-        _createTicket(numbers, amount);
+    // ------------------------------------------------------------------
+    // Purchase Tickets
+    // ------------------------------------------------------------------
 
-        totalPool += amount;
+    /**
+     * @notice Buy multiple tickets, each costing exactly 1 USDC.
+     *         Up to 100 tickets in a single purchase, and up to 100 total.
+     * @param numbersList An array of arrays of chosen numbers (2..5 unique numbers per ticket).
+     * @param referrer Optional referral address.
+     */
+    function purchaseTickets(
+        uint8[][] calldata numbersList,
+        address referrer
+    ) external whenNotPaused nonReentrant {
+        require(isOpen, "Sales closed");
+        uint256 numTickets = numbersList.length;
+        require(numTickets > 0, "No tickets provided");
+        require(numTickets <= 100, "Max 100 tickets in one purchase");
+        // Ensure total tickets per player doesn't exceed 100
+        require(
+            playerTickets[msg.sender].length + numTickets <= TICKETS_PER_PLAYER_MAX,
+            "Exceeds per-player max of 100 tickets"
+        );
 
-        // Add player to the list if not already present
+        // Each ticket costs 1 USDC => total cost = numTickets * (1 USDC)
+        // In base units, that's numTickets * (10^tokenDecimals).
+        uint256 costPerTicket = 10 ** tokenDecimals; // e.g. 1_000_000 for 6 decimals
+        uint256 totalCost = numTickets * costPerTicket;
+
+        // Transfer USDC from user to contract
+        USDC.safeTransferFrom(msg.sender, address(this), totalCost);
+        // Increase totalPool by totalCost
+        totalPool += totalCost;
+
+        // Create each ticket
+        for (uint256 i = 0; i < numTickets; i++) {
+            _createTicket(numbersList[i]);
+        }
+
+        // Track player if first time
         if (!hasPurchased[msg.sender]) {
             players.push(msg.sender);
             hasPurchased[msg.sender] = true;
         }
 
+        // Referral
         if (referrer != address(0) && referrer != msg.sender) {
-            referralRewards[referrer] += (amount * referralRewardPercent) / 100;
+            referralRewards[referrer] += (totalCost * referralRewardPercent) / 100;
         }
     }
 
-    /// @notice Allows players to purchase multiple tickets with selected numbers
-    /// @param numbers An array of arrays, each containing unique numbers between MIN_NUMBER and MAX_NUMBER
-    /// @param amounts An array of amounts for each ticket
-    /// @param referrer The address of the referrer
-    function purchaseMultipleTickets(uint8[][] calldata numbers, uint256[] calldata amounts, address referrer) external whenNotPaused whenOpen nonReentrant {
-        uint256 minTicketPrice = MIN_TICKET_PRICE * 10**tokenDecimals;
-        uint256 maxTicketPrice = MAX_TICKET_PRICE * 10**tokenDecimals;
+    /**
+     * @dev Internal helper to create a single Ticket with the user-chosen numbers.
+     *      The actual cost has already been transferred, we just store the ticket data.
+     */
+    function _createTicket(uint8[] calldata numbers) internal {
+        require(validNumbers(numbers), "Invalid ticket numbers");
 
-        require(numbers.length == amounts.length, "Invalid input lengths");
-
-        uint256 totalAmount = 0;
-        for (uint256 i = 0; i < amounts.length; i++) {
-            require(amounts[i] >= minTicketPrice && amounts[i] <= maxTicketPrice, "Invalid amount: must be between 1 and 1000");
-            totalAmount += amounts[i];
-        }
-
-        token.safeTransferFrom(msg.sender, address(this), totalAmount);
-        for (uint256 i = 0; i < numbers.length; i++) {
-            _createTicket(numbers[i], amounts[i]);
-        }
-
-        totalPool += totalAmount;
-
-        // Add player to the list if not already present
-        if (!hasPurchased[msg.sender]) {
-            players.push(msg.sender);
-            hasPurchased[msg.sender] = true;
-        }
-
-        if (referrer != address(0) && referrer != msg.sender) {
-            referralRewards[referrer] += (totalAmount * referralRewardPercent) / 100;
-        }
-    }
-
-    /// @notice Internal function to create a ticket
-    /// @param numbers An array of unique numbers between MIN_NUMBER and MAX_NUMBER
-    /// @param amount The amount of tokens staked
-    function _createTicket(uint8[] calldata numbers, uint256 amount) internal {
-        require(playerTickets[msg.sender].length < MAX_TICKETS_PER_PLAYER, "Ticket limit reached");
-        require(validNumbers(numbers), "Invalid numbers");
-
-        // Store the ticket
-        Ticket memory newTicket = Ticket({
+        Ticket memory t = Ticket({
             numbers: numbers,
-            claimed: false,
-            amount: amount,
             player: msg.sender,
-            prize: 0 // Prize will be calculated after winning numbers are revealed
+            claimed: false,
+            prize: 0,
+            matches: 0
         });
 
-        allTickets.push(newTicket);
-        playerTickets[msg.sender].push(allTickets.length - 1);
+        allTickets.push(t);
+        uint256 ticketId = allTickets.length - 1;
+        playerTickets[msg.sender].push(ticketId);
 
-        emit TicketPurchased(msg.sender, winningNumbersHash, allTickets.length - 1, numbers);
+        emit TicketPurchased(msg.sender, ticketId, numbers);
     }
 
-    /// @notice Owner reveals the winning numbers by providing the salt and numbers
-    /// @param salt The secret salt used in the commitment
-    /// @param numbers An array of 5 unique winning numbers
+    // ------------------------------------------------------------------
+    // Reveal Winning Numbers
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice Owner reveals the winning numbers by providing salt + numbers that match the commit.
+     */
     function revealWinningNumbers(
         bytes32 salt,
         uint8[NUM_BALLS] calldata numbers
-    ) external whenNotPaused onlyOwner whenOpen nonReentrant {
-        require(!isRevealed, "Winning numbers already revealed");
+    ) external onlyOwner nonReentrant {
+        require(isOpen, "Already closed");
+        require(!isRevealed, "Already revealed");
 
-        // Convert the fixed-size array to a dynamic array for validation
-        uint8[] memory numbersDynamic = new uint8[](NUM_BALLS);
+        // Validate
+        uint8[] memory dynamicNums = new uint8[](NUM_BALLS);
         for (uint8 i = 0; i < NUM_BALLS; i++) {
-            numbersDynamic[i] = numbers[i];
+            dynamicNums[i] = numbers[i];
         }
+        require(validNumbers(dynamicNums), "Invalid winning numbers");
 
-        require(validNumbers(numbersDynamic), "Invalid winning numbers");
+        // Check commitment
+        bytes32 computedHash = keccak256(abi.encodePacked(salt, numbers));
+        require(computedHash == winningNumbersHash, "Commit mismatch");
 
-        // Verify commitment
-        bytes32 hash = keccak256(abi.encodePacked(salt, numbers));
-        require(hash == winningNumbersHash, "Commitment does not match");
+        // Close sales
+        isOpen = false;
+        isRevealed = true;
+        drawTimestamp = block.timestamp;
 
-        // Set winning numbers
         for (uint8 i = 0; i < NUM_BALLS; i++) {
             winningNumbers[i] = numbers[i];
         }
 
-        isRevealed = true;
-        isOpen = false; // Close ticket sales
+        // Switch to Counting phase
+        distPhase = DistPhase.Counting;
+        nextTicketToCount = 0;
 
-        uint256 ownerShare = totalPool / 10; // 10% of the pool goes to the owner
-        token.safeTransfer(owner(), ownerShare); // 10% of the pool goes to the owner
-        totalPool -= ownerShare;
-
-        emit WinningNumbersRevealed(winningNumbers, winningNumbersHash);
+        emit WinningNumbersRevealed(winningNumbers);
+        emit DistributionPhaseChanged(distPhase);
     }
 
-    /// @notice Players claim their prizes based on their tickets
-    function claimPrize() external whenNotPaused whenRevealed nonReentrant {
-        require(playerTickets[msg.sender].length > 0, "No tickets purchased");
-        require(isRevealed, "Winning numbers not revealed yet");
+    // ------------------------------------------------------------------
+    // PHASE 1: Counting Matches (batched)
+    // ------------------------------------------------------------------
 
-        uint256[] storage ticketIds = playerTickets[msg.sender];
-        uint256 totalPrize = 0;
+    /**
+     * @notice Count how many numbers each ticket matched, in batches to avoid "out of gas."
+     * @param batchSize Max number of tickets to process in this call.
+     */
+    function countMatchesBatch(uint256 batchSize) external nonReentrant {
+        require(distPhase == DistPhase.Counting, "Not in Counting phase");
+        require(isRevealed, "Numbers not revealed");
 
-        for (uint256 i = 0; i < ticketIds.length; i++) {
-            Ticket storage ticket = allTickets[ticketIds[i]];
-            calculatePrizes(ticket, winningNumbers);
-            if (!ticket.claimed && ticket.prize > 0) {
-                totalPrize += ticket.prize;
-            }
-
-            ticket.claimed = true;
-            totalPool = totalPool - ticket.amount; // Decrement the total pool by the prize amount
+        uint256 startIndex = nextTicketToCount;
+        uint256 endIndex = startIndex + batchSize;
+        if (endIndex > allTickets.length) {
+            endIndex = allTickets.length;
         }
 
-        if (totalPrize > 0) {
-            token.safeTransfer(msg.sender, totalPrize);
-            totalPool -= totalPrize; // Decrement the total pool by the prize amount
-            emit PrizeClaimed(msg.sender, winningNumbersHash, totalPrize);
-        } else {
-            emit NoPrizeToClaimed(msg.sender, winningNumbersHash, totalPrize);
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            uint8 m = _countMatching(allTickets[i].numbers, winningNumbers);
+            allTickets[i].matches = m;
+            matchCounts[m] += 1;
+        }
+
+        nextTicketToCount = endIndex;
+        emit BatchProcessed(startIndex, endIndex, distPhase);
+
+        if (nextTicketToCount >= allTickets.length) {
+            distPhase = DistPhase.Counted;
+            emit DistributionPhaseChanged(distPhase);
         }
     }
 
-    /// @notice Calculates the prizes for all tickets after winning numbers are revealed
-    /// @param ticket The ticket to calculate prizes for
-    function calculatePrizes(Ticket storage ticket, uint8[NUM_BALLS] memory gameWinningNumbers) internal {
-        if (!ticket.claimed) {
-            uint8 matchingNumbers = countMatchingNumbers(ticket.numbers, gameWinningNumbers);
+    // ------------------------------------------------------------------
+    // PHASE 2: Finalize Pools with Dynamic Rollover
+    // ------------------------------------------------------------------
 
-            // Check if the player matched all their selected numbers
-            if (matchingNumbers == ticket.numbers.length) {
-                // Prize is proportional to the amount staked and number of numbers matched
-                uint256 multiplier = getMultiplier(ticket.numbers.length);
-                ticket.prize = ticket.amount * multiplier;
+    /**
+     * @notice Distribute 90% of totalPool among match=5..1 with dynamic rollover.
+     *         - If match5 has winners, it gets 40% of the 90%. Otherwise, it rolls down, etc.
+     */
+    function finalizeMatchPools() external onlyOwner nonReentrant {
+        require(distPhase == DistPhase.Counted, "Not in Counted phase");
+
+        // House keeps 10%; we distribute 90%
+        uint256 distributionPool = (totalPool * 90) / 100;
+
+        // top-down order: 5->4->3->2->1
+        // baseDistribution = [40,20,15,10,5]
+        uint8[5] memory groupOrder = [5, 4, 3, 2, 1];
+
+        uint256 leftover = 0;
+
+        for (uint256 i = 0; i < groupOrder.length; i++) {
+            uint8 group = groupOrder[i];
+            // This group's portion plus leftover
+            uint256 portion = leftover + ((distributionPool * baseDistribution[i]) / 100);
+
+            if (matchCounts[group] == 0) {
+                // no winners in this group => carry forward
+                leftover = portion;
             } else {
-                ticket.prize = 0; // No prize if not all numbers matched
+                // assign entire portion to this group
+                matchPools[group] = portion;
+                leftover = 0;
             }
         }
+
+        // If leftover remains after group=1, attempt to find a group from bottom up (1->2->3->4->5)
+        if (leftover > 0) {
+            for (uint8 g = 1; g <= 5; g++) {
+                if (matchCounts[g] > 0) {
+                    matchPools[g] += leftover;
+                    leftover = 0;
+                    break;
+                }
+            }
+        }
+
+        // leftover remains if nobody had any matches at all (i.e., no participants).
+        // That leftover stays in the contract effectively.
+
+        // Move on to awarding
+        distPhase = DistPhase.Awarding;
+        nextTicketToAward = 0;
+        emit DistributionPhaseChanged(distPhase);
     }
 
-    /// @notice Determines the multiplier based on the number of numbers selected
-    /// @param numSelected The number of numbers the player selected
-    /// @return multiplier The multiplier for the ticket
-    function getMultiplier(uint256 numSelected) public pure returns (uint256 multiplier) {
-        if (numSelected == 2) {
-            multiplier = 240;
-        } else if (numSelected == 3) {
-            multiplier = 2100;
-        } else if (numSelected == 4) {
-            multiplier = 6000;
-        } else if (numSelected == 5) {
-            multiplier = 44000;
-        } else {
-            multiplier = 0;
+    // ------------------------------------------------------------------
+    // PHASE 3: Awarding Prizes (batched)
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice Assign each ticket's final `prize`, in batches.
+     * @param batchSize Max number of tickets to process in this call.
+     */
+    function awardPrizesBatch(uint256 batchSize) external nonReentrant {
+        require(distPhase == DistPhase.Awarding, "Not in Awarding phase");
+
+        uint256 startIndex = nextTicketToAward;
+        uint256 endIndex = startIndex + batchSize;
+        if (endIndex > allTickets.length) {
+            endIndex = allTickets.length;
+        }
+
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            Ticket storage t = allTickets[i];
+            uint8 m = t.matches;
+            if (matchCounts[m] > 0 && matchPools[m] > 0) {
+                // integer division leftover remains in contract
+                t.prize = matchPools[m] / matchCounts[m];
+            }
+        }
+
+        nextTicketToAward = endIndex;
+        emit BatchProcessed(startIndex, endIndex, distPhase);
+
+        if (nextTicketToAward >= allTickets.length) {
+            distPhase = DistPhase.Done;
+            emit DistributionPhaseChanged(distPhase);
         }
     }
 
-    /// @notice Counts the number of matching numbers between two arrays
-    /// @param numbers The player's selected numbers
-    /// @param _winningNumbers The winning numbers
-    /// @return count The count of matching numbers
-    function countMatchingNumbers(uint8[] memory numbers, uint8[NUM_BALLS] memory _winningNumbers) internal pure returns (uint8 count) {
-        count = 0;
-        for (uint8 i = 0; i < numbers.length; i++) {
-            for (uint8 j = 0; j < _winningNumbers.length; j++) {
-                if (numbers[i] == _winningNumbers[j]) {
+    // ------------------------------------------------------------------
+    // Claim Prizes
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice Players call this to claim any unclaimed prizes on their tickets.
+     */
+    function claimPrize() external whenNotPaused nonReentrant {
+        require(isRevealed, "Not revealed yet");
+        require(distPhase == DistPhase.Done, "Not done awarding");
+        require(drawTimestamp + 3 days > block.timestamp, "Cashout deadline passed");
+
+        uint256[] storage ids = playerTickets[msg.sender];
+        require(ids.length > 0, "No tickets");
+
+        uint256 totalClaim;
+        for (uint256 i = 0; i < ids.length; i++) {
+            Ticket storage t = allTickets[ids[i]];
+            if (!t.claimed && t.prize > 0) {
+                t.claimed = true;
+                totalClaim += t.prize;
+                emit PrizeClaimed(msg.sender, ids[i], t.prize);
+            } else if (!t.claimed && t.prize == 0) {
+                t.claimed = true;
+                emit NoPrizeToClaim(msg.sender, ids[i]);
+            }
+        }
+
+        if (totalClaim > 0) {
+            // Decrease the pool and send USDC out
+            totalPool -= totalClaim;
+            USDC.safeTransfer(msg.sender, totalClaim);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Referral Rewards
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice Referrers can claim their accumulated referral rewards (in USDC).
+     */
+    function claimReferralRewards() external whenNotPaused nonReentrant {
+        uint256 reward = referralRewards[msg.sender];
+        require(reward > 0, "No referral rewards");
+        referralRewards[msg.sender] = 0;
+        USDC.safeTransfer(msg.sender, reward);
+
+        emit ReferralRewardClaimed(msg.sender, reward);
+    }
+
+    function updateReferralRewardPercent(uint8 percentAmount) external onlyOwner {
+        require(percentAmount <= 10, "Max 10%");
+        referralRewardPercent = percentAmount;
+        emit ReferralRewardPercentUpdated(percentAmount);
+    }
+
+    // ------------------------------------------------------------------
+    // Helper Functions
+    // ------------------------------------------------------------------
+
+    /**
+     * @dev Count how many of the ticket's numbers appear in the winning numbers.
+     */
+    function _countMatching(uint8[] memory arr, uint8[NUM_BALLS] memory win)
+        internal
+        pure
+        returns (uint8)
+    {
+        uint8 count;
+        for (uint8 i = 0; i < arr.length; i++) {
+            for (uint8 j = 0; j < win.length; j++) {
+                if (arr[i] == win[j]) {
                     count++;
                     break;
                 }
             }
         }
+        return count;
     }
 
-    /// @notice Gets the user's ticket IDs for the current game
-    /// @param user The address of the user
-    /// @return tickets An array of ticket IDs belonging to the user
+    /**
+     * @dev Validate ticket numbers: 2..5 unique numbers within [MIN_NUMBER..MAX_NUMBER].
+     */
+    function validNumbers(uint8[] memory nums) public pure returns (bool) {
+        if (nums.length < 2 || nums.length > NUM_BALLS) {
+            return false;
+        }
+        for (uint256 i = 0; i < nums.length; i++) {
+            if (nums[i] < MIN_NUMBER || nums[i] > MAX_NUMBER) {
+                return false;
+            }
+            for (uint256 j = i + 1; j < nums.length; j++) {
+                if (nums[i] == nums[j]) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // View Helpers
+    // ------------------------------------------------------------------
+
+    function getTicket(uint256 ticketId) external view returns (Ticket memory) {
+        require(ticketId < allTickets.length, "Invalid ticket ID");
+        return allTickets[ticketId];
+    }
+
     function getPlayerTickets(address user) external view returns (uint256[] memory) {
         return playerTickets[user];
     }
 
-    /// @notice Gets the ticket details
-    /// @param ticketId The ID of the ticket
-    /// @return Ticket The details of the specified ticket
-    function getTicket(uint256 ticketId) external view returns (Ticket memory) {
-        require(ticketId < allTickets.length, "Ticket does not exist");
-        return allTickets[ticketId];
+    // ------------------------------------------------------------------
+    // Owner Maintenance / Emergencies
+    // ------------------------------------------------------------------
+
+    /**
+     * @notice After the cashout deadline, the owner can withdraw the leftover USDC (if any).
+     */
+    function withdrawTokensAllFundsAfterCashoutDeadline() 
+        external 
+        onlyOwner 
+        nonReentrant 
+    {
+        require(block.timestamp > drawTimestamp + 3 days, "Cashout not ended");
+
+        uint256 balance = USDC.balanceOf(address(this));
+        USDC.safeTransfer(owner(), balance);
+        // zero out totalPool, since we've removed everything
+        totalPool = 0;
     }
 
-    /// @notice Gets the winning numbers for the current game
-    /// @return winningNumbers The winning numbers
-    function getWinningNumbers() external view returns (uint8[NUM_BALLS] memory) {
-        return winningNumbers;
-    }
-
-    /// @notice Validates that the numbers are unique and within the valid range
-    /// @param numbers The array of numbers
-    /// @return isValid True if the numbers are valid
-    function validNumbers(uint8[] memory numbers) internal pure returns (bool isValid) {
-        if (numbers.length >= 2 && numbers.length <= NUM_BALLS) {
-            isValid = true;
-            for (uint8 i = 0; i < numbers.length; i++) {
-                if (numbers[i] < MIN_NUMBER || numbers[i] > MAX_NUMBER) {
-                    isValid = false;
-                    break;
-                }
-                for (uint8 j = i + 1; j < numbers.length; j++) {
-                    if (numbers[i] == numbers[j]) {
-                        isValid = false;
-                        break;
-                    }
-                }
-                if (!isValid) {
-                    break;
-                }
-            }
+    /**
+     * @notice Owner can withdraw a specified amount of USDC at any time (if needed).
+     */
+    function withdraw(uint256 amount) external onlyOwner {
+        require(amount > 0, "Zero amount");
+        require(
+            USDC.balanceOf(address(this)) >= amount,
+            "Insufficient USDC in contract"
+        );
+        // Decrease totalPool accordingly (if you want to keep totalPool in sync)
+        if (amount <= totalPool) {
+            totalPool -= amount;
         } else {
-            isValid = false;
+            // If you prefer to keep totalPool as "all tickets", 
+            // you can handle differently; this is just an example.
+            totalPool = 0;
         }
+        USDC.safeTransfer(owner(), amount);
     }
 
-    /// @notice Allows the referral rewards to be claimed by the referrer
-    function claimReferralRewards() external whenNotPaused nonReentrant {
-        uint256 reward = referralRewards[msg.sender];
-        require(reward > 0, "No referral rewards to claim");
-
-        referralRewards[msg.sender] = 0;
-        token.safeTransfer(msg.sender, reward);
-    }
-
-    /// @notice Update referralRewardPercent amount
-    /// @param percentAmount The new referral reward percentage (must be between 1 and 10)
-    function updateReferralRewardPercent(uint8 percentAmount) external whenNotPaused onlyOwner {
-        require(percentAmount > 0 && percentAmount <= 10, "Invalid percent amount");
-        referralRewardPercent = percentAmount;
-        emit ReferralRewardPercentUpdated(percentAmount);
-    }
-
-    /// @notice Withdraw all remaining tokens after cashout deadline
-    function withdrawTokensAllFundsAfterCashoutDeadline() external onlyOwner nonReentrant() {
-        require(block.timestamp > drawTimestamp + 3 days, "Cashout deadline not reached");
-        uint256 contractBalance = token.balanceOf(address(this));
-        token.safeTransfer(owner(), contractBalance);
-    }
-
-    /// @notice Deposit tokens into the contract
-    /// @param amount The amount of tokens to deposit
-    function depositTokens(uint256 amount) external onlyOwner nonReentrant {
-        require(amount > 0, "Amount must be greater than 0");
-        token.safeTransferFrom(owner(), address(this), amount);
-        totalPool += amount;
-    }
-
-    /// @notice Pause the contract
+    /**
+     * @notice Pause the contract (emergencies).
+     */
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpause the contract
+    /**
+     * @notice Unpause the contract.
+     */
     function unpause() external onlyOwner {
         _unpause();
     }
