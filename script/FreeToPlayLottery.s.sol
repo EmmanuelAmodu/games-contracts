@@ -13,8 +13,6 @@ contract FreeToPlayLotteryDeployer is Script {
         vm.startBroadcast();
         console.log("Starting broadcast");
 
-        address initialOwner = 0x6F6623B00B0b2eAEFA47A4fDE06d6931F7121722;
-
         FreePlayToken freePlay = new FreePlayToken();
         console.log("FreePlayLottery deployed at:", address(freePlay));
 

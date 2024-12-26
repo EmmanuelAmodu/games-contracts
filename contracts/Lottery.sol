@@ -9,8 +9,6 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
-import "./MerkleLotteryDistribution.sol";
-
 /**
  * @title Lottery with Dynamic Rollover Distribution
  * @notice This version:
@@ -20,7 +18,7 @@ import "./MerkleLotteryDistribution.sol";
  *         4) Dynamically rolls unused portions if some match groups have no winners.
  *         5) Reserves 10% of the total pool as "house revenue"; 90% is distributed.
  */
-contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistribution {
+contract Lottery is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // ------------------------------------------------------------------
@@ -35,26 +33,12 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
     // Max 100 tickets total for each player
     uint256 public constant TICKETS_PER_PLAYER_MAX = 100; 
 
-    // We distribute 90% among these match categories:
-    //    5 matches -> 40%
-    //    4 matches -> 20%
-    //    3 matches -> 15%
-    //    2 matches -> 10%
-    //    1 match   -> 5%
-    // Sum = 90%
-    uint256[5] public baseDistribution = [40, 20, 15, 10, 5];
-    // baseDistribution[0] = 40% (for 5 matches)
-    // baseDistribution[1] = 20% (for 4 matches)
-    // baseDistribution[2] = 15% (for 3 matches)
-    // baseDistribution[3] = 10% (for 2 matches)
-    // baseDistribution[4] = 5%  (for 1 match)
-
     // ------------------------------------------------------------------
     // State Variables
     // ------------------------------------------------------------------
 
     // The USDC token (assumed to have 6 decimals in typical usage)
-    IERC20 public USDC;
+    IERC20 public immutable token;
     // We store the sum of all ticket payments (in USDC terms) in `totalPool`.
     uint256 public totalPool; 
     // For convenience, we read the token's decimals (e.g. 6 for USDC).
@@ -66,6 +50,12 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
     uint256 public drawTimestamp;   // Timestamp used for deadlines
     bytes32 public winningNumbersHash;
     uint8[NUM_BALLS] public winningNumbers;
+
+    // The Merkle root for (ticketId, prize) pairs
+    bytes32 public merkleRoot;
+
+    // Keep track of which tickets have been claimed
+    mapping(uint256 => bool) public isClaimed;
 
     // Tickets
     struct Ticket {
@@ -85,29 +75,13 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
     mapping(address => uint256) public referralRewards;
     uint8 public referralRewardPercent;
 
-    // Match counts (how many tickets matched exactly 0..5 numbers)
-    uint256[6] public matchCounts;
-
-    // How much is allocated to each match group (0..5) out of the 90%
-    uint256[6] public matchPools;
-
-    // Distribution phases
-    enum DistPhase { None, Counting, Counted, Awarding, Done }
-    DistPhase public distPhase;
-
-    // Batching indexes
-    uint256 public nextTicketToCount;
-    uint256 public nextTicketToAward;
-
     // ------------------------------------------------------------------
     // Events
     // ------------------------------------------------------------------
 
     event TicketPurchased(address indexed player, uint256 ticketId, uint8[] numbers);
     event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers);
-    event DistributionPhaseChanged(DistPhase phase);
-    event BatchProcessed(uint256 startIndex, uint256 endIndex, DistPhase phase);
-
+    event MerkleRootSet(bytes32 root);
     event PrizeClaimed(address indexed player, uint256 ticketId, uint256 amount);
     event NoPrizeToClaim(address indexed player, uint256 ticketId);
     event ReferralRewardClaimed(address indexed referrer, uint256 amount);
@@ -120,19 +94,19 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
     /**
      * @param initialOwner The owner of this contract.
      * @param _winningNumbersHash Commitment hash for the winning numbers.
-     * @param _usdc The address of the USDC token.
+     * @param _tokenAddress The address of the USDC token.
      */
     constructor(
         address initialOwner,
         bytes32 _winningNumbersHash,
-        address _usdc
-    ) Ownable(initialOwner) MerkleLotteryDistribution(_usdc) {
-        require(_usdc != address(0), "Invalid USDC address");
+        address _tokenAddress
+    ) Ownable(initialOwner) {
+        require(_tokenAddress != address(0), "Invalid USDC address");
         require(_winningNumbersHash != bytes32(0), "Invalid hash");
 
         winningNumbersHash = _winningNumbersHash;
-        USDC = IERC20(_usdc);
-        tokenDecimals = IERC20Metadata(_usdc).decimals();
+        token = IERC20(_tokenAddress);
+        tokenDecimals = IERC20Metadata(_tokenAddress).decimals();
         referralRewardPercent = 1; // e.g. 1%
 
         // Initialize lottery
@@ -140,7 +114,6 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
         isRevealed = false;
         // e.g. let users buy tickets for 1 day
         drawTimestamp = block.timestamp + 1 days;
-        distPhase = DistPhase.None;
     }
 
     // ------------------------------------------------------------------
@@ -158,6 +131,8 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
         address referrer
     ) external whenNotPaused nonReentrant {
         require(isOpen, "Sales closed");
+        require(drawTimestamp > block.timestamp, "Sales deadline passed");
+
         uint256 numTickets = numbersList.length;
         require(numTickets > 0, "No tickets provided");
         require(numTickets <= 100, "Max 100 tickets in one purchase");
@@ -173,7 +148,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
         uint256 totalCost = numTickets * costPerTicket;
 
         // Transfer USDC from user to contract
-        USDC.safeTransferFrom(msg.sender, address(this), totalCost);
+        token.safeTransferFrom(msg.sender, address(this), totalCost);
         // Increase totalPool by totalCost
         totalPool += totalCost;
 
@@ -225,7 +200,8 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
      */
     function revealWinningNumbers(
         bytes32 salt,
-        uint8[NUM_BALLS] calldata numbers
+        uint8[NUM_BALLS] calldata numbers,
+        bytes32 newRoot
     ) external onlyOwner nonReentrant {
         require(isOpen, "Already closed");
         require(!isRevealed, "Already revealed");
@@ -244,176 +220,54 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
         // Close sales
         isOpen = false;
         isRevealed = true;
-        drawTimestamp = block.timestamp;
 
         for (uint8 i = 0; i < NUM_BALLS; i++) {
             winningNumbers[i] = numbers[i];
         }
 
-        // Switch to Counting phase
-        distPhase = DistPhase.Counting;
-        nextTicketToCount = 0;
-
+        _setMerkleRoot(newRoot);
         emit WinningNumbersRevealed(winningNumbers);
-        emit DistributionPhaseChanged(distPhase);
     }
 
-    // ------------------------------------------------------------------
-    // PHASE 1: Counting Matches (batched)
-    // ------------------------------------------------------------------
-
     /**
-     * @notice Count how many numbers each ticket matched, in batches to avoid "out of gas."
-     * @param batchSize Max number of tickets to process in this call.
+     * @notice Sets the new merkle root after you've computed final rewards off-chain.
+     *         Only owner can call.
      */
-    function countMatchesBatch(uint256 batchSize) external nonReentrant {
-        require(distPhase == DistPhase.Counting, "Not in Counting phase");
-        require(isRevealed, "Numbers not revealed");
-
-        uint256 startIndex = nextTicketToCount;
-        uint256 endIndex = startIndex + batchSize;
-        if (endIndex > allTickets.length) {
-            endIndex = allTickets.length;
-        }
-
-        for (uint256 i = startIndex; i < endIndex; i++) {
-            uint8 m = _countMatching(allTickets[i].numbers, winningNumbers);
-            allTickets[i].matches = m;
-            matchCounts[m] += 1;
-        }
-
-        nextTicketToCount = endIndex;
-        emit BatchProcessed(startIndex, endIndex, distPhase);
-
-        if (nextTicketToCount >= allTickets.length) {
-            distPhase = DistPhase.Counted;
-            emit DistributionPhaseChanged(distPhase);
-        }
+    function _setMerkleRoot(bytes32 newRoot) internal {
+        merkleRoot = newRoot;
+        emit MerkleRootSet(newRoot);
     }
 
-    // ------------------------------------------------------------------
-    // PHASE 2: Finalize Pools with Dynamic Rollover
-    // ------------------------------------------------------------------
-
     /**
-     * @notice Distribute 90% of totalPool among match=5..1 with dynamic rollover.
-     *         - If match5 has winners, it gets 40% of the 90%. Otherwise, it rolls down, etc.
+     * @notice Users call this to claim their final prize for a given `ticketId`.
+     * @param ticketId The ticket ID.
+     * @param prize The prize amount (in USDC) for this ticket.
+     * @param merkleProof The Merkle proof showing that (ticketId, prize) is in the distribution.
      */
-    function finalizeMatchPools() external onlyOwner nonReentrant {
-        require(distPhase == DistPhase.Counted, "Not in Counted phase");
+    function claimPrize(
+        uint256 ticketId,
+        uint256 prize,
+        bytes32[] calldata merkleProof
+    ) external {
+        require(merkleRoot != bytes32(0), "Merkle root not set");
+        require(!isClaimed[ticketId], "Already claimed");
 
-        // House keeps 10%; we distribute 90%
-        uint256 distributionPool = (totalPool * 90) / 100;
+        // 1) Reconstruct the leaf
+        bytes32 leaf = keccak256(abi.encodePacked(ticketId, prize, msg.sender));
+        // If you want to store user address in the leaf, include `msg.sender`.
 
-        // top-down order: 5->4->3->2->1
-        // baseDistribution = [40,20,15,10,5]
-        uint8[5] memory groupOrder = [5, 4, 3, 2, 1];
+        // 2) Verify proof => root
+        bool valid = MerkleProof.verify(merkleProof, merkleRoot, leaf);
+        require(valid, "Invalid proof");
 
-        uint256 leftover = 0;
+        // Mark claimed
+        isClaimed[ticketId] = true;
 
-        for (uint256 i = 0; i < groupOrder.length; i++) {
-            uint8 group = groupOrder[i];
-            // This group's portion plus leftover
-            uint256 portion = leftover + ((distributionPool * baseDistribution[i]) / 100);
+        // Transfer USDC
+        require(token.balanceOf(address(this)) >= prize, "Not enough USDC in contract");
+        token.safeTransfer(msg.sender, prize);
 
-            if (matchCounts[group] == 0) {
-                // no winners in this group => carry forward
-                leftover = portion;
-            } else {
-                // assign entire portion to this group
-                matchPools[group] = portion;
-                leftover = 0;
-            }
-        }
-
-        // If leftover remains after group=1, attempt to find a group from bottom up (1->2->3->4->5)
-        if (leftover > 0) {
-            for (uint8 g = 1; g <= 5; g++) {
-                if (matchCounts[g] > 0) {
-                    matchPools[g] += leftover;
-                    leftover = 0;
-                    break;
-                }
-            }
-        }
-
-        // leftover remains if nobody had any matches at all (i.e., no participants).
-        // That leftover stays in the contract effectively.
-
-        // Move on to awarding
-        distPhase = DistPhase.Awarding;
-        nextTicketToAward = 0;
-        emit DistributionPhaseChanged(distPhase);
-    }
-
-    // ------------------------------------------------------------------
-    // PHASE 3: Awarding Prizes (batched)
-    // ------------------------------------------------------------------
-
-    /**
-     * @notice Assign each ticket's final `prize`, in batches.
-     * @param batchSize Max number of tickets to process in this call.
-     */
-    function awardPrizesBatch(uint256 batchSize) external nonReentrant {
-        require(distPhase == DistPhase.Awarding, "Not in Awarding phase");
-
-        uint256 startIndex = nextTicketToAward;
-        uint256 endIndex = startIndex + batchSize;
-        if (endIndex > allTickets.length) {
-            endIndex = allTickets.length;
-        }
-
-        for (uint256 i = startIndex; i < endIndex; i++) {
-            Ticket storage t = allTickets[i];
-            uint8 m = t.matches;
-            if (matchCounts[m] > 0 && matchPools[m] > 0) {
-                // integer division leftover remains in contract
-                t.prize = matchPools[m] / matchCounts[m];
-            }
-        }
-
-        nextTicketToAward = endIndex;
-        emit BatchProcessed(startIndex, endIndex, distPhase);
-
-        if (nextTicketToAward >= allTickets.length) {
-            distPhase = DistPhase.Done;
-            emit DistributionPhaseChanged(distPhase);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Claim Prizes
-    // ------------------------------------------------------------------
-
-    /**
-     * @notice Players call this to claim any unclaimed prizes on their tickets.
-     */
-    function claimPrize() external whenNotPaused nonReentrant {
-        require(isRevealed, "Not revealed yet");
-        require(distPhase == DistPhase.Done, "Not done awarding");
-        require(drawTimestamp + 3 days > block.timestamp, "Cashout deadline passed");
-
-        uint256[] storage ids = playerTickets[msg.sender];
-        require(ids.length > 0, "No tickets");
-
-        uint256 totalClaim;
-        for (uint256 i = 0; i < ids.length; i++) {
-            Ticket storage t = allTickets[ids[i]];
-            if (!t.claimed && t.prize > 0) {
-                t.claimed = true;
-                totalClaim += t.prize;
-                emit PrizeClaimed(msg.sender, ids[i], t.prize);
-            } else if (!t.claimed && t.prize == 0) {
-                t.claimed = true;
-                emit NoPrizeToClaim(msg.sender, ids[i]);
-            }
-        }
-
-        if (totalClaim > 0) {
-            // Decrease the pool and send USDC out
-            totalPool -= totalClaim;
-            USDC.safeTransfer(msg.sender, totalClaim);
-        }
+        emit PrizeClaimed(msg.sender, ticketId, prize);
     }
 
     // ------------------------------------------------------------------
@@ -427,7 +281,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
         uint256 reward = referralRewards[msg.sender];
         require(reward > 0, "No referral rewards");
         referralRewards[msg.sender] = 0;
-        USDC.safeTransfer(msg.sender, reward);
+        token.safeTransfer(msg.sender, reward);
 
         emit ReferralRewardClaimed(msg.sender, reward);
     }
@@ -436,30 +290,6 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
         require(percentAmount <= 10, "Max 10%");
         referralRewardPercent = percentAmount;
         emit ReferralRewardPercentUpdated(percentAmount);
-    }
-
-    // ------------------------------------------------------------------
-    // Helper Functions
-    // ------------------------------------------------------------------
-
-    /**
-     * @dev Count how many of the ticket's numbers appear in the winning numbers.
-     */
-    function _countMatching(uint8[] memory arr, uint8[NUM_BALLS] memory win)
-        internal
-        pure
-        returns (uint8)
-    {
-        uint8 count;
-        for (uint8 i = 0; i < arr.length; i++) {
-            for (uint8 j = 0; j < win.length; j++) {
-                if (arr[i] == win[j]) {
-                    count++;
-                    break;
-                }
-            }
-        }
-        return count;
     }
 
     /**
@@ -509,30 +339,10 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable, MerkleLotteryDistributio
     {
         require(block.timestamp > drawTimestamp + 3 days, "Cashout not ended");
 
-        uint256 balance = USDC.balanceOf(address(this));
-        USDC.safeTransfer(owner(), balance);
+        uint256 balance = token.balanceOf(address(this));
+        token.safeTransfer(owner(), balance);
         // zero out totalPool, since we've removed everything
         totalPool = 0;
-    }
-
-    /**
-     * @notice Owner can withdraw a specified amount of USDC at any time (if needed).
-     */
-    function withdraw(uint256 amount) external onlyOwner {
-        require(amount > 0, "Zero amount");
-        require(
-            USDC.balanceOf(address(this)) >= amount,
-            "Insufficient USDC in contract"
-        );
-        // Decrease totalPool accordingly (if you want to keep totalPool in sync)
-        if (amount <= totalPool) {
-            totalPool -= amount;
-        } else {
-            // If you prefer to keep totalPool as "all tickets", 
-            // you can handle differently; this is just an example.
-            totalPool = 0;
-        }
-        USDC.safeTransfer(owner(), amount);
     }
 
     /**

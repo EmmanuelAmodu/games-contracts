@@ -17,6 +17,9 @@ contract LotteryFactory is Ownable {
         bytes32 indexed winningNumbersHash
     );
 
+    // Address of the ERC20 token used in the Lottery
+    address public tokenAddress;
+
     // Counter to ensure unique salts
     uint256 private deploymentCounter;
 
@@ -31,17 +34,16 @@ contract LotteryFactory is Ownable {
 
     /// @notice Constructor that sets the Factory owner
     /// @param initialOwner The address of the initial owner
-    constructor(address initialOwner) Ownable(initialOwner) {}
+    /// @param _tokenAddress The address of the ERC20 token used in the Lottery
+    constructor(address initialOwner, address _tokenAddress) Ownable(initialOwner) {
+        tokenAddress = _tokenAddress;
+    }
 
     /// @notice Deploys a new Lottery contract using CREATE2 with a unique salt
-    /// @param token The ERC20 token address used in the Lottery
     /// @param _winningNumbersHash The hash of the winning numbers
     /// @return lotteryAddress The address of the deployed Lottery contract
-    function deployLottery(
-        address token,
-        bytes32 _winningNumbersHash
-    ) external returns (address lotteryAddress) {
-        require(token != address(0), "Token address cannot be zero");
+    function deployLottery(bytes32 _winningNumbersHash) onlyOwner external returns (address lotteryAddress) {
+        require(tokenAddress != address(0), "Token address cannot be zero");
         require(_winningNumbersHash != bytes32(0), "Winning numbers hash cannot be zero");
 
         // Increment the deployment counter
@@ -50,7 +52,7 @@ contract LotteryFactory is Ownable {
         // Encode the constructor arguments
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), token, _winningNumbersHash, msg.sender)
+            abi.encode(owner(), _winningNumbersHash, tokenAddress, msg.sender)
         );
 
         // Deploy the Lottery contract using CREATE2

@@ -10,8 +10,9 @@ contract LotteryFactoryDeployer is Script {
         console.log("Starting broadcast");
 
         address initialOwner = 0x6F6623B00B0b2eAEFA47A4fDE06d6931F7121722;
+        address USDC = address(1);
 
-        LotteryFactory lotteryFactory = new LotteryFactory(initialOwner);
+        LotteryFactory lotteryFactory = new LotteryFactory(initialOwner, USDC);
         console.log("LotteryFactory deployed at:", address(lotteryFactory));
 
         vm.stopBroadcast();
