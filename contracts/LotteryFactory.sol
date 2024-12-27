@@ -79,17 +79,16 @@ contract LotteryFactory is Ownable {
     }
 
     /// @notice Computes the address of a Lottery contract to be deployed with given parameters
-    /// @param token The ERC20 token address used in the Lottery
     /// @param _winningNumbersHash The hash of the winning numbers
     /// @return predicted The predicted address of the Lottery contract
     function getLotteryAddress(
-        address token,
         bytes32 _winningNumbersHash
     ) external view returns (address predicted) {
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), token, _winningNumbersHash)
+            abi.encode(owner(), address(this), _winningNumbersHash, tokenAddress)
         );
+
         predicted = Create2.computeAddress(_winningNumbersHash, keccak256(bytecodeWithArgs), address(this));
     }
 
