@@ -45,11 +45,12 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     uint8 public tokenDecimals;
 
     // Lottery states
-    bool public isOpen;             // Whether ticket purchases are open
-    bool public isRevealed;         // Whether winning numbers have been revealed
-    uint256 public drawTimestamp;   // Timestamp used for deadlines
-    bytes32 public winningNumbersHash;
-    uint8[NUM_BALLS] public winningNumbers;
+    bool public isOpen;                      // Whether ticket purchases are open
+    bool public isRevealed;                  // Whether winning numbers have been revealed
+    uint256 public drawTimestamp;            // Timestamp used for deadlines
+    bytes32 public winningNumbersHash;       // Commitment hash for the winning numbers
+    uint8[NUM_BALLS] public winningNumbers;  // The actual winning numbers
+    address public factory;                  // Lottery Factory address
 
     // The Merkle root for (ticketId, prize) pairs
     bytes32 public merkleRoot;
@@ -87,6 +88,11 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     event ReferralRewardClaimed(address indexed referrer, uint256 amount);
     event ReferralRewardPercentUpdated(uint8 newPercent);
 
+    modifier onlyFactory() {
+        require(msg.sender == factory, "Only factory");
+        _;
+    }
+
     // ------------------------------------------------------------------
     // Constructor
     // ------------------------------------------------------------------
@@ -98,12 +104,14 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
      */
     constructor(
         address initialOwner,
+        address _factory,
         bytes32 _winningNumbersHash,
         address _tokenAddress
     ) Ownable(initialOwner) {
         require(_tokenAddress != address(0), "Invalid USDC address");
         require(_winningNumbersHash != bytes32(0), "Invalid hash");
 
+        factory = _factory;
         winningNumbersHash = _winningNumbersHash;
         token = IERC20(_tokenAddress);
         tokenDecimals = IERC20Metadata(_tokenAddress).decimals();
@@ -202,7 +210,8 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         bytes32 salt,
         uint8[NUM_BALLS] calldata numbers,
         bytes32 newRoot
-    ) external onlyOwner nonReentrant {
+    ) external onlyFactory nonReentrant {
+        require(block.timestamp > drawTimestamp, "Draw deadline not passed");
         require(isOpen, "Already closed");
         require(!isRevealed, "Already revealed");
 

@@ -52,7 +52,7 @@ contract LotteryFactory is Ownable {
         // Encode the constructor arguments
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), _winningNumbersHash, tokenAddress, msg.sender)
+            abi.encode(owner(), address(this), _winningNumbersHash, tokenAddress)
         );
 
         // Deploy the Lottery contract using CREATE2
@@ -64,6 +64,18 @@ contract LotteryFactory is Ownable {
 
         currentLottery = lotteryAddress;
         emit LotteryDeployed(lotteryAddress, _winningNumbersHash);
+    }
+
+    /// @notice Ends the current Lottery by revealing the winning numbers
+    /// @param salt The unique salt used for deployment
+    /// @param numbers The winning numbers
+    /// @param newRoot The new Merkle root of the winning numbers
+    function endLottery(
+        bytes32 salt,
+        uint8[5] calldata numbers,
+        bytes32 newRoot
+    ) external onlyOwner {
+        Lottery(currentLottery).revealWinningNumbers(salt, numbers, newRoot);
     }
 
     /// @notice Computes the address of a Lottery contract to be deployed with given parameters
