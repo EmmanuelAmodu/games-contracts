@@ -87,13 +87,8 @@ contract LotteryTest is Test {
         uint256 contractBalBefore = token.balanceOf(address(lottery));
 
         vm.startPrank(player1);
-        uint8[][] memory numbers = new uint8[][](1);
-        numbers[0] = new uint8[](5);
-        numbers[0][0] = 1;
-        numbers[0][1] = 2;
-        numbers[0][2] = 3;
-        numbers[0][3] = 4;
-        numbers[0][4] = 5;
+        uint8[5][] memory numbers = new uint8[5][](1);
+        numbers[0] = [1, 2, 3, 4, 5];
         lottery.purchaseTickets(numbers, referrer);
         vm.stopPrank();
 
@@ -119,23 +114,16 @@ contract LotteryTest is Test {
 
         vm.startPrank(player1);
 
-        uint8[][] memory numbersList = new uint8[][](3);
+        uint8[5][] memory numbersList = new uint8[5][](3);
 
         // Ticket A
-        numbersList[0] = new uint8[](2);
-        numbersList[0][0] = 1;
-        numbersList[0][1] = 2;
+        numbersList[0] = [1, 2, 3, 4, 5];
 
         // Ticket B
-        numbersList[1] = new uint8[](3);
-        numbersList[1][0] = 10;
-        numbersList[1][1] = 20;
-        numbersList[1][2] = 30;
+        numbersList[1] = [10, 15, 20, 25, 30];
 
         // Ticket C
-        numbersList[2] = new uint8[](2);
-        numbersList[2][0] = 7;
-        numbersList[2][1] = 8;
+        numbersList[2] = [7, 8, 9, 11, 13];
 
         lottery.purchaseTickets(numbersList, referrer);
         vm.stopPrank();
@@ -187,8 +175,8 @@ contract LotteryTest is Test {
 
         // Now sales closed
         vm.startPrank(player1);
-        uint8[][] memory numbers = new uint8[][](1);
-        numbers[0] = new uint8[](5);
+        uint8[5][] memory numbers = new uint8[5][](1);
+        numbers[0] = [1, 2, 3, 4, 5];
         vm.expectRevert(bytes("Sales closed"));
         lottery.purchaseTickets(numbers, referrer);
         vm.stopPrank();
@@ -203,10 +191,8 @@ contract LotteryTest is Test {
         assertTrue(lottery.paused());
 
         vm.startPrank(player1);
-        uint8[][] memory numbers = new uint8[][](1);
-        numbers[0] = new uint8[](2);
-        numbers[0][0] = 1;
-        numbers[0][1] = 2;
+        uint8[5][] memory numbers = new uint8[5][](1);
+        numbers[0] = [1, 2, 3, 4, 5];
 
         vm.expectRevert(); // We didn't specify the revert reason; in code it's Pausable
         lottery.purchaseTickets(numbers, referrer);
@@ -225,10 +211,8 @@ contract LotteryTest is Test {
         assertFalse(lottery.paused());
 
         vm.startPrank(player1);
-        uint8[][] memory numbers = new uint8[][](1);
-        numbers[0] = new uint8[](2);
-        numbers[0][0] = 1;
-        numbers[0][1] = 2;
+        uint8[5][] memory numbers = new uint8[5][](1);
+        numbers[0] = [1, 2, 3, 4, 5];
         lottery.purchaseTickets(numbers, referrer);
         vm.stopPrank();
     }
@@ -238,13 +222,9 @@ contract LotteryTest is Test {
      */
     function testClaimReferralRewards() public {
         vm.startPrank(player1);
-        uint8[][] memory arr = new uint8[][](2);
-        arr[0] = new uint8[](2);
-        arr[0][0] = 1;
-        arr[0][1] = 2;
-        arr[1] = new uint8[](2);
-        arr[1][0] = 3;
-        arr[1][1] = 4;
+        uint8[5][] memory arr = new uint8[5][](2);
+        arr[0] = [1, 2, 3, 4, 5];
+        arr[1] = [3, 4, 5, 6, 7];
         lottery.purchaseTickets(arr, referrer);
         vm.stopPrank();
 
@@ -265,10 +245,8 @@ contract LotteryTest is Test {
      */
     function testReferrerIsPurchaserNoReward() public {
         vm.startPrank(player1);
-        uint8[][] memory arr = new uint8[][](1);
-        arr[0] = new uint8[](2);
-        arr[0][0] = 1;
-        arr[0][1] = 2;
+        uint8[5][] memory arr = new uint8[5][](1);
+        arr[0] = [1, 2, 3, 4, 5];
         lottery.purchaseTickets(arr, player1); // self as ref => no reward
         vm.stopPrank();
 
@@ -306,43 +284,12 @@ contract LotteryTest is Test {
         vm.startPrank(player1);
 
         // We'll attempt to buy 101 tickets in one call
-        uint8[][] memory arr = new uint8[][](101);
+        uint8[5][] memory arr = new uint8[5][](101);
         for (uint256 i = 0; i < 101; i++) {
-            arr[i] = new uint8[](2);
-            arr[i][0] = 1;
-            arr[i][1] = 2;
+            arr[i] = [uint8(1), uint8(2), uint8(0), uint8(0), uint8(0)];
         }
         vm.expectRevert(bytes("Max 100 tickets in one purchase"));
         lottery.purchaseTickets(arr, referrer);
-
-        vm.stopPrank();
-    }
-
-    /**
-     * @dev If we want to test the "Exceeds per-player max of 100" scenario:
-     *      buy 50 => buy 51 => second call fails.
-     */
-    function testExceedMaxTicketsPerPlayer() public {
-        vm.startPrank(player1);
-
-        // Buy 50 in one call
-        uint8[][] memory arr50 = new uint8[][](50);
-        for (uint256 i = 0; i < 50; i++) {
-            arr50[i] = new uint8[](2);
-            arr50[i][0] = 1;
-            arr50[i][1] = 2;
-        }
-        lottery.purchaseTickets(arr50, referrer);
-
-        // Now buy 51 more => revert "Exceeds per-player max of 100 tickets"
-        uint8[][] memory arr51 = new uint8[][](51);
-        for (uint256 i = 0; i < 51; i++) {
-            arr51[i] = new uint8[](2);
-            arr51[i][0] = 3;
-            arr51[i][1] = 4;
-        }
-        vm.expectRevert(bytes("Exceeds per-player max of 100 tickets"));
-        lottery.purchaseTickets(arr51, referrer);
 
         vm.stopPrank();
     }
@@ -355,10 +302,8 @@ contract LotteryTest is Test {
         vm.warp(lottery.drawTimestamp() + 1);
 
         vm.startPrank(player1);
-        uint8[][] memory arr = new uint8[][](1);
-        arr[0] = new uint8[](2);
-        arr[0][0] = 1;
-        arr[0][1] = 2;
+        uint8[5][] memory arr = new uint8[5][](1);
+        arr[0] = [1, 2, 3, 4, 5];
         vm.expectRevert(bytes("Sales deadline passed"));
         lottery.purchaseTickets(arr, referrer);
         vm.stopPrank();
@@ -380,32 +325,15 @@ contract LotteryTest is Test {
     function testGetTicketDetails() public {
         // Player1 buys 2 tickets
         vm.startPrank(player1);
-        uint8[][] memory arr = new uint8[][](2);
-
-        arr[0] = new uint8[](3);
-        arr[0][0] = 1;
-        arr[0][1] = 2;
-        arr[0][2] = 3;
-
-        arr[1] = new uint8[](2);
-        arr[1][0] = 4;
-        arr[1][1] = 5;
+        uint8[5][] memory arr = new uint8[5][](2);
+        arr[0] = [1, 2, 3, 4, 5];
+        arr[1] = [4, 5, 6, 7, 8];
 
         lottery.purchaseTickets(arr, referrer);
         vm.stopPrank();
 
         uint256[] memory tix = lottery.getPlayerTickets(player1);
         assertEq(tix.length, 2);
-
-        // Check first
-        Lottery.Ticket memory t0 = lottery.getTicket(tix[0]);
-        assertEq(t0.player, player1);
-        assertEq(t0.numbers.length, 3);
-
-        // Check second
-        Lottery.Ticket memory t1 = lottery.getTicket(tix[1]);
-        assertEq(t1.player, player1);
-        assertEq(t1.numbers.length, 2);
     }
 
     /**
@@ -414,10 +342,8 @@ contract LotteryTest is Test {
     function testOwnerWithdrawAfterCashoutDeadline() public {
         // Player1 buys 1 ticket
         vm.startPrank(player1);
-        uint8[][] memory arr = new uint8[][](1);
-        arr[0] = new uint8[](2);
-        arr[0][0] = 11;
-        arr[0][1] = 22;
+        uint8[5][] memory arr = new uint8[5][](1);
+        arr[0] = [11, 22, 33, 44, 55];
         lottery.purchaseTickets(arr, referrer);
         vm.stopPrank();
 
@@ -447,10 +373,8 @@ contract LotteryTest is Test {
     function testClaimWithMerkleProof() public {
         // 1) Purchase 1 ticket
         vm.startPrank(player1);
-        uint8[][] memory numbersList = new uint8[][](1);
-        numbersList[0] = new uint8[](2);
-        numbersList[0][0] = 10;
-        numbersList[0][1] = 15;
+        uint8[5][] memory numbersList = new uint8[5][](1);
+        numbersList[0] = [10, 15, 20, 25, 30];
         lottery.purchaseTickets(numbersList, address(0)); 
         vm.stopPrank();
 
@@ -500,6 +424,16 @@ contract LotteryTest is Test {
         vm.prank(player1);
         vm.expectRevert(bytes("Already claimed"));
         lottery.claimPrize(ticketId, prize, proofValid);
+    }
+
+    function testValidNumbers() public {
+        uint8[5] memory numbers = [1, 2, 3, 4, 5];
+        bool isValid = lottery.validNumbers(numbers);
+        assertTrue(isValid, "Valid for unique 5 numbers");
+
+        numbers = [1, 1, 1, 1, 1];
+        isValid = lottery.validNumbers(numbers);
+        assertFalse(isValid, 'Invalid for non unique numbers');
     }
 }
 

@@ -46,10 +46,14 @@ contract LotteryFactory is Ownable {
         require(tokenAddress != address(0), "Token address cannot be zero");
         require(_winningNumbersHash != bytes32(0), "Winning numbers hash cannot be zero");
 
+        if (currentLottery != address(0)) {
+            require(Lottery(currentLottery).isRevealed(), "Current lottery has not ended");
+        }
+
         // Encode the constructor arguments
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), address(this), _winningNumbersHash, tokenAddress)
+            abi.encode(owner(), address(this), _winningNumbersHash, tokenAddress, allLotteries.length)
         );
 
         // Deploy the Lottery contract using CREATE2

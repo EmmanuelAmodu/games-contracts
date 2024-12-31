@@ -27,7 +27,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     uint8 public constant NUM_BALLS = 5;
     uint8 public constant MIN_NUMBER = 1;
-    uint8 public constant MAX_NUMBER = 90;
+    uint8 public constant MAX_NUMBER = 99;
 
     // ------------------------------------------------------------------
     // State Variables
@@ -51,12 +51,15 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     // The Merkle root for (ticketId, prize) pairs
     bytes32 public merkleRoot;
 
+    // Lottery index to ensure address is unique
+    uint256 public lotteryIndex;
+
     // Keep track of which tickets have been claimed
     mapping(uint256 => bool) public isClaimed;
 
     // Tickets
     struct Ticket {
-        uint8[] numbers; 
+        uint8[NUM_BALLS] numbers; 
         address player; 
         bool claimed;   
         uint256 prize;  
@@ -76,7 +79,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     // Events
     // ------------------------------------------------------------------
 
-    event TicketPurchased(address indexed player, uint256 ticketId, uint8[] numbers);
+    event TicketPurchased(address indexed player, uint256 ticketId, uint8[NUM_BALLS] numbers);
     event WinningNumbersRevealed(uint8[NUM_BALLS] winningNumbers);
     event MerkleRootSet(bytes32 root);
     event PrizeClaimed(address indexed player, uint256 ticketId, uint256 amount);
@@ -102,12 +105,14 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         address initialOwner,
         address _factory,
         bytes32 _winningNumbersHash,
-        address _tokenAddress
+        address _tokenAddress,
+        uint256 _lotteryIndex
     ) Ownable(initialOwner) {
         require(_tokenAddress != address(0), "Invalid USDC address");
         require(_winningNumbersHash != bytes32(0), "Invalid hash");
 
         factory = _factory;
+        lotteryIndex = _lotteryIndex;
         winningNumbersHash = _winningNumbersHash;
         token = IERC20(_tokenAddress);
         tokenDecimals = IERC20Metadata(_tokenAddress).decimals();
@@ -131,7 +136,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
      * @param referrer Optional referral address.
      */
     function purchaseTickets(
-        uint8[][] calldata numbersList,
+        uint8[NUM_BALLS][] calldata numbersList,
         address referrer
     ) external whenNotPaused nonReentrant {
         require(isOpen, "Sales closed");
@@ -172,7 +177,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
      * @dev Internal helper to create a single Ticket with the user-chosen numbers.
      *      The actual cost has already been transferred, we just store the ticket data.
      */
-    function _createTicket(uint8[] calldata numbers) internal {
+    function _createTicket(uint8[NUM_BALLS] calldata numbers) internal {
         require(validNumbers(numbers), "Invalid ticket numbers");
 
         Ticket memory t = Ticket({
@@ -207,7 +212,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         require(!isRevealed, "Already revealed");
 
         // Validate
-        uint8[] memory dynamicNums = new uint8[](NUM_BALLS);
+        uint8[NUM_BALLS] memory dynamicNums;
         for (uint8 i = 0; i < NUM_BALLS; i++) {
             dynamicNums[i] = numbers[i];
         }
@@ -293,22 +298,26 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev Validate ticket numbers: 2..5 unique numbers within [MIN_NUMBER..MAX_NUMBER].
+     * @dev Validate ticket numbers: 5 unique numbers within [MIN_NUMBER..MAX_NUMBER].
      */
-    function validNumbers(uint8[] memory nums) public pure returns (bool) {
-        if (nums.length < 2 || nums.length > NUM_BALLS) {
+    function validNumbers(uint8[NUM_BALLS] memory nums) public pure returns (bool) {
+        if (nums.length != NUM_BALLS) {
             return false;
         }
+
+        bool[100] memory seen;
         for (uint256 i = 0; i < nums.length; i++) {
             if (nums[i] < MIN_NUMBER || nums[i] > MAX_NUMBER) {
                 return false;
             }
-            for (uint256 j = i + 1; j < nums.length; j++) {
-                if (nums[i] == nums[j]) {
-                    return false;
-                }
+
+            if (seen[nums[i]]) {
+                return false;
             }
+
+            seen[nums[i]] = true;
         }
+
         return true;
     }
 
