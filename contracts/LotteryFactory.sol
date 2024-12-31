@@ -20,11 +20,11 @@ contract LotteryFactory is Ownable {
     // Address of the ERC20 token used in the Lottery
     address public tokenAddress;
 
-    // Counter to ensure unique salts
-    uint256 private deploymentCounter;
-
     // Mapping from salt to deployed Lottery address
     mapping(bytes32 => address) public lotteries;
+
+    // Mapping from deployed Lottery address to block number
+    mapping(address => uint256) public lotteryDeploymentBlockNumber;
 
     // Array of all deployed Lottery addresses
     address[] public allLotteries;
@@ -46,9 +46,6 @@ contract LotteryFactory is Ownable {
         require(tokenAddress != address(0), "Token address cannot be zero");
         require(_winningNumbersHash != bytes32(0), "Winning numbers hash cannot be zero");
 
-        // Increment the deployment counter
-        deploymentCounter += 1;
-
         // Encode the constructor arguments
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
@@ -60,6 +57,7 @@ contract LotteryFactory is Ownable {
 
         // Store the deployed Lottery address
         lotteries[_winningNumbersHash] = lotteryAddress;
+        lotteryDeploymentBlockNumber[lotteryAddress] = block.number;
         allLotteries.push(lotteryAddress);
 
         currentLottery = lotteryAddress;
@@ -67,15 +65,18 @@ contract LotteryFactory is Ownable {
     }
 
     /// @notice Ends the current Lottery by revealing the winning numbers
+    /// @param winningNumbersHash The winning hash of the lottery
     /// @param salt The unique salt used for deployment
     /// @param numbers The winning numbers
     /// @param newRoot The new Merkle root of the winning numbers
     function endLottery(
+        bytes32 winningNumbersHash,
         bytes32 salt,
         uint8[5] calldata numbers,
         bytes32 newRoot
     ) external onlyOwner {
-        Lottery(currentLottery).revealWinningNumbers(salt, numbers, newRoot);
+        address lottery = lotteries[winningNumbersHash];
+        Lottery(lottery).revealWinningNumbers(salt, numbers, newRoot);
     }
 
     /// @notice Computes the address of a Lottery contract to be deployed with given parameters

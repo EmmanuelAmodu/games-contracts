@@ -29,10 +29,6 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
     uint8 public constant MIN_NUMBER = 1;
     uint8 public constant MAX_NUMBER = 90;
 
-    // Each ticket costs exactly 1 USDC
-    // Max 100 tickets total for each player
-    uint256 public constant TICKETS_PER_PLAYER_MAX = 100; 
-
     // ------------------------------------------------------------------
     // State Variables
     // ------------------------------------------------------------------
@@ -130,7 +126,7 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
 
     /**
      * @notice Buy multiple tickets, each costing exactly 1 USDC.
-     *         Up to 100 tickets in a single purchase, and up to 100 total.
+     *         Up to 100 tickets in a single purchase.
      * @param numbersList An array of arrays of chosen numbers (2..5 unique numbers per ticket).
      * @param referrer Optional referral address.
      */
@@ -144,11 +140,6 @@ contract Lottery is Ownable, ReentrancyGuard, Pausable {
         uint256 numTickets = numbersList.length;
         require(numTickets > 0, "No tickets provided");
         require(numTickets <= 100, "Max 100 tickets in one purchase");
-        // Ensure total tickets per player doesn't exceed 100
-        require(
-            playerTickets[msg.sender].length + numTickets <= TICKETS_PER_PLAYER_MAX,
-            "Exceeds per-player max of 100 tickets"
-        );
 
         // Each ticket costs 1 USDC => total cost = numTickets * (1 USDC)
         // In base units, that's numTickets * (10^tokenDecimals).
