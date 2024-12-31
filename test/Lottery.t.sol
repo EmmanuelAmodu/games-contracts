@@ -50,7 +50,8 @@ contract LotteryTest is Test {
             owner,
             factory,
             predefinedWinningHash,
-            address(token)
+            address(token),
+            0
         );
 
         // Mint enough USDC (1e6 = 1 token in 6 decimals)

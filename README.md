@@ -50,7 +50,7 @@ $ anvil
 ```shell
 forge script script/LotteryFactoryTestNet.s.sol:LotteryFactoryTestNetDeployer --broadcast --account pepper-deployer --rpc-url https://rpc.sepolia-api.lisk.com
 
-forge verify-contract --rpc-url https://rpc.sepolia-api.lisk.com --verifier blockscout --verifier-url 'https://sepolia-blockscout.lisk.com/api/' --constructor-args $(cast abi-encode "constructor(address,address)" 0x6F6623B00B0b2eAEFA47A4fDE06d6931F7121722 0x9Ff6a0DC28dfc56858BDC677E77858E00BDF7D44) 0x7Cf08228EC01191c2693B9539D02B37DACCC3f24 contracts/LotteryFactory.sol:LotteryFactory --watch
+forge verify-contract --rpc-url https://rpc.sepolia-api.lisk.com --verifier blockscout --verifier-url 'https://sepolia-blockscout.lisk.com/api/' --constructor-args $(cast abi-encode "constructor(address,address)" 0x6F6623B00B0b2eAEFA47A4fDE06d6931F7121722 0x9Ff6a0DC28dfc56858BDC677E77858E00BDF7D44) 0xca50b49134F5C32eA7100A9a350275B77Dc5365C contracts/LotteryFactory.sol:LotteryFactory --watch
 ```
 
 ### Cast
