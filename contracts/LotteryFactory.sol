@@ -41,12 +41,13 @@ contract LotteryFactory is Ownable {
 
     /// @notice Deploys a new Lottery contract using CREATE2 with a unique salt
     /// @param _winningNumbersHash The hash of the winning numbers
+    /// @param checkRunningLottery Check if there is a running lottery
     /// @return lotteryAddress The address of the deployed Lottery contract
-    function deployLottery(bytes32 _winningNumbersHash) onlyOwner external returns (address lotteryAddress) {
+    function deployLottery(bytes32 _winningNumbersHash, bool checkRunningLottery) onlyOwner external returns (address lotteryAddress) {
         require(tokenAddress != address(0), "Token address cannot be zero");
         require(_winningNumbersHash != bytes32(0), "Winning numbers hash cannot be zero");
 
-        if (currentLottery != address(0)) {
+        if (currentLottery != address(0) && checkRunningLottery) {
             require(Lottery(currentLottery).isRevealed(), "Current lottery has not ended");
         }
 
