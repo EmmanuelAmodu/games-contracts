@@ -4,8 +4,8 @@ pragma solidity ^0.8.17;
 // Import OpenZeppelin Contracts
 import "@openzeppelin/contracts/utils/Create2.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-
 import "./Lottery.sol";
+import "./interfaces/IContractRegistry.sol";
 
 /// @title LotteryFactory
 /// @author Emmanuel Amodu
@@ -32,10 +32,24 @@ contract LotteryFactory is Ownable {
     // Address of the current Lottery contract
     address public currentLottery;
 
+    /// @notice Address of the ContractRegistry contract
+    IContractRegistry public contractRegistry;
+
+    /// @notice Client ID
+    bytes32 public clientId;
+
+
     /// @notice Constructor that sets the Factory owner
     /// @param initialOwner The address of the initial owner
     /// @param _tokenAddress The address of the ERC20 token used in the Lottery
-    constructor(address initialOwner, address _tokenAddress) Ownable(initialOwner) {
+    constructor(
+        bytes32 _clientId,
+        address _contractRegistry,
+        address initialOwner,
+        address _tokenAddress
+    ) Ownable(initialOwner) {
+        clientId = _clientId;
+        contractRegistry = IContractRegistry(_contractRegistry);
         tokenAddress = _tokenAddress;
     }
 
@@ -43,27 +57,52 @@ contract LotteryFactory is Ownable {
     /// @param _winningNumbersHash The hash of the winning numbers
     /// @param checkRunningLottery Check if there is a running lottery
     /// @return lotteryAddress The address of the deployed Lottery contract
-    function deployLottery(bytes32 _winningNumbersHash, bool checkRunningLottery) onlyOwner external returns (address lotteryAddress) {
+    function deployLottery(
+        bytes32 _winningNumbersHash,
+        bool checkRunningLottery
+    ) external onlyOwner returns (address lotteryAddress) {
         require(tokenAddress != address(0), "Token address cannot be zero");
-        require(_winningNumbersHash != bytes32(0), "Winning numbers hash cannot be zero");
+        require(
+            _winningNumbersHash != bytes32(0),
+            "Winning numbers hash cannot be zero"
+        );
 
         if (currentLottery != address(0) && checkRunningLottery) {
-            require(Lottery(currentLottery).isRevealed(), "Current lottery has not ended");
+            require(
+                Lottery(currentLottery).isRevealed(),
+                "Current lottery has not ended"
+            );
         }
 
         // Encode the constructor arguments
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), address(this), _winningNumbersHash, tokenAddress, allLotteries.length)
+            abi.encode(
+                owner(),
+                address(this),
+                _winningNumbersHash,
+                tokenAddress,
+                allLotteries.length
+            )
         );
 
         // Deploy the Lottery contract using CREATE2
-        lotteryAddress = Create2.deploy(0, _winningNumbersHash, bytecodeWithArgs);
+        lotteryAddress = Create2.deploy(
+            0,
+            _winningNumbersHash,
+            bytecodeWithArgs
+        );
 
         // Store the deployed Lottery address
         lotteries[_winningNumbersHash] = lotteryAddress;
         lotteryDeploymentBlockNumber[lotteryAddress] = block.number;
         allLotteries.push(lotteryAddress);
+
+        contractRegistry.setAllowedContract(
+            clientId,
+            lotteryAddress,
+            true
+        );
 
         currentLottery = lotteryAddress;
         emit LotteryDeployed(lotteryAddress, _winningNumbersHash);
@@ -92,16 +131,28 @@ contract LotteryFactory is Ownable {
     ) external view returns (address predicted) {
         bytes memory bytecodeWithArgs = abi.encodePacked(
             type(Lottery).creationCode,
-            abi.encode(owner(), address(this), _winningNumbersHash, tokenAddress)
+            abi.encode(
+                owner(),
+                address(this),
+                _winningNumbersHash,
+                tokenAddress,
+                allLotteries.length
+            )
         );
 
-        predicted = Create2.computeAddress(_winningNumbersHash, keccak256(bytecodeWithArgs), address(this));
+        predicted = Create2.computeAddress(
+            _winningNumbersHash,
+            keccak256(bytecodeWithArgs),
+            address(this)
+        );
     }
 
     /// @notice Checks if a Lottery contract has already been deployed with the given salt
     /// @param winningNumbersHash The unique salt used for deployment
     /// @return exists True if the contract exists, false otherwise
-    function isLotteryDeployed(bytes32 winningNumbersHash) external view returns (bool exists) {
+    function isLotteryDeployed(
+        bytes32 winningNumbersHash
+    ) external view returns (bool exists) {
         address predicted = lotteries[winningNumbersHash];
         if (predicted != address(0)) {
             exists = predicted.code.length > 0;
@@ -114,7 +165,10 @@ contract LotteryFactory is Ownable {
     /// @param start The start index of the array
     /// @param end The end index of the array
     /// @return lotteriesList An array of all Lottery contract addresses deployed by the factory
-    function getAllLotteries(uint256 start, uint256 end) external view returns (address[] memory) {
+    function getAllLotteries(
+        uint256 start,
+        uint256 end
+    ) external view returns (address[] memory) {
         // lotteriesList = allLotteries;
         uint256 length = end - start;
         address[] memory lotteriesList = new address[](length);

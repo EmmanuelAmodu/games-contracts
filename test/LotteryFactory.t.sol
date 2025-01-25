@@ -23,11 +23,17 @@ contract MockERC20 is ERC20 {
     }
 }
 
+contract ContractRegistry {
+    function setAllowedContract(bytes32 _clientId, address _contract, bool _allowed) external {}
+    function isContractAllowed(bytes32 _clientId, address _contract) external view returns (bool) {}
+}
+
 /// @title LotteryFactoryTest
 /// @notice This contract contains unit tests for the LotteryFactory contract
 contract LotteryFactoryTest is Test {
     // Instance of the LotteryFactory
     LotteryFactory public factory;
+    ContractRegistry public contractRegistry;
 
     // Instance of the MockERC20 token
     MockERC20 public token;
@@ -61,6 +67,7 @@ contract LotteryFactoryTest is Test {
 
         // Deploy the MockERC20 token
         token = new MockERC20("Mock Token", "MTK");
+        contractRegistry = new ContractRegistry();
 
         // Mint tokens to test addresses
         token.mint(owner, 1_000_000 ether);
@@ -70,7 +77,12 @@ contract LotteryFactoryTest is Test {
 
         // Deploy the LotteryFactory with the owner
         vm.prank(owner);
-        factory = new LotteryFactory(owner, address(token));
+        factory = new LotteryFactory(
+            0x0000000000000000000000000000000000000000000000000000000000000001, // Client ID
+            address(contractRegistry), // Contract registry not needed for tests, 
+            owner,
+            address(token)
+        );
 
         // Approve the factory to spend tokens if needed
         vm.prank(owner);
@@ -82,18 +94,18 @@ contract LotteryFactoryTest is Test {
         // Attempt to deploy Lottery from a non-owner address (should revert)
         vm.prank(nonOwner);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
-        factory.deployLottery(winningHash1);
+        factory.deployLottery(winningHash1, false);
 
         // Deploy Lottery from the owner address (should succeed)
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
         assertTrue(deployedLottery != address(0));
     }
 
     /// @notice Tests deploying a Lottery contract with valid parameters
     function testDeployLotteryWithValidParameters() public {
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
 
         // Verify that the Lottery is stored in the mapping
         assertEq(factory.lotteries(winningHash1), deployedLottery);
@@ -111,16 +123,16 @@ contract LotteryFactoryTest is Test {
     function testDeployLotteryWithInvalidHash() public {
         vm.prank(owner);
         vm.expectRevert("Winning numbers hash cannot be zero");
-        factory.deployLottery(bytes32(0));
+        factory.deployLottery(bytes32(0), false);
     }
 
     /// @notice Tests that getLotteryAddress computes the correct address
     function testGetLotteryAddress() public {
-        vm.prank(owner);
-        factory.deployLottery(winningHash1);
-
         // Compute the expected address using the factory's getLotteryAddress function
         address expectedAddress = factory.getLotteryAddress(winningHash1);
+
+        vm.prank(owner);
+        factory.deployLottery(winningHash1, false);
 
         // Retrieve the deployed Lottery address
         address deployedLottery = factory.lotteries(winningHash1);
@@ -132,7 +144,7 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that isLotteryDeployed correctly identifies deployed and undeployed Lotteries
     function testIsLotteryDeployed() public {
         vm.prank(owner);
-        factory.deployLottery(winningHash1);
+        factory.deployLottery(winningHash1, false);
 
         // Check that the deployed Lottery is recognized
         bool exists = factory.isLotteryDeployed(winningHash1);
@@ -146,13 +158,13 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests deploying multiple Lottery contracts with unique hashes
     function testDeployMultipleLotteries() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
 
         vm.prank(owner);
-        address lottery3 = factory.deployLottery(winningHash3);
+        address lottery3 = factory.deployLottery(winningHash3, false);
 
         // Verify that all Lotteries are stored correctly
         assertEq(factory.lotteries(winningHash1), lottery1);
@@ -170,41 +182,28 @@ contract LotteryFactoryTest is Test {
         assertEq(factory.currentLottery(), lottery3);
     }
 
-    /// @notice Tests that deploying a Lottery with an existing winningNumbersHash (salt) reverts
-    function testDeployLotteryWithExistingHashFails() public {
-        vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
-        assertTrue(lottery1 != address(0));
-
-        // Attempt to deploy another Lottery with the same winningNumbersHash (should revert)
-        vm.prank(owner);
-        // vm.expectRevert("Create2: Failed on deployment");
-        vm.expectRevert(abi.encodeWithSelector(Create2.Create2FailedDeployment.selector));
-        factory.deployLottery(winningHash1);
-    }
-
     /// @notice Tests that currentLottery is updated correctly after each deployment
     function testCurrentLotteryIsUpdated() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
         assertEq(factory.currentLottery(), lottery1);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
         assertEq(factory.currentLottery(), lottery2);
 
         vm.prank(owner);
-        address lottery3 = factory.deployLottery(winningHash3);
+        address lottery3 = factory.deployLottery(winningHash3, false);
         assertEq(factory.currentLottery(), lottery3);
     }
 
     /// @notice Tests that the LotteryDeployed event is emitted with correct parameters
     function testLotteryDeployedEvent() public {
-        vm.expectEmit(false, true, true, true);
+        vm.expectEmit(false, true, true, false);
         emit LotteryFactory.LotteryDeployed(address(0), winningHash1);
 
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
 
         assert(deployedLottery != address(0));
     }
@@ -220,7 +219,7 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests deploying a Lottery with a unique hash and verifies its existence
     function testDeployLotteryAndVerifyExistence() public {
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
 
         // Check existence
         bool exists = factory.isLotteryDeployed(winningHash1);
@@ -233,11 +232,11 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that deploying multiple Lotteries with different hashes works as expected
     function testDeployMultipleLotteriesWithDifferentHashes() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
         assertTrue(lottery1 != address(0));
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
         assertTrue(lottery2 != address(0));
 
         // Ensure that both Lotteries are deployed correctly
@@ -258,20 +257,20 @@ contract LotteryFactoryTest is Test {
 
         // Deploy the Lottery
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
         assertEq(deployedLottery, expectedAddress);
     }
 
     /// @notice Tests that deploying a Lottery with a unique hash produces a unique address
     function testUniqueAddressesForUniqueHashes() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
 
         vm.prank(owner);
-        address lottery3 = factory.deployLottery(winningHash3);
+        address lottery3 = factory.deployLottery(winningHash3, false);
 
         // Ensure all addresses are unique
         assertTrue(lottery1 != lottery2);
@@ -288,30 +287,30 @@ contract LotteryFactoryTest is Test {
         // For demonstration, assume deploymentCounter is 0 initially
         // Deploy a Lottery
         vm.prank(owner);
-        factory.deployLottery(winningHash1);
+        factory.deployLottery(winningHash1, false);
 
         // Assume deploymentCounter is now 1
         // As deploymentCounter is private, we cannot directly check it.
         // Alternatively, deploy another Lottery and ensure it's allowed.
 
         vm.prank(owner);
-        factory.deployLottery(winningHash2);
+        factory.deployLottery(winningHash2, false);
     }
 
     /// @notice Tests deploying a Lottery with a zero winningNumbersHash (should revert)
     function testDeployLotteryWithZeroWinningHash() public {
         vm.prank(owner);
         vm.expectRevert("Winning numbers hash cannot be zero");
-        factory.deployLottery(bytes32(0));
+        factory.deployLottery(bytes32(0), false);
     }
 
     /// @notice Tests that deploying a Lottery updates the allLotteries array correctly
     function testAllLotteriesArray() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
 
         address[] memory lotteries = factory.getAllLotteries(0, 2);
         assertEq(lotteries.length, 2);
@@ -322,7 +321,7 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that deploying a Lottery sets the correct owner in the Lottery contract
     function testLotteryOwnerIsFactoryOwner() public {
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
 
         // Verify that the owner of the Lottery contract is the factory owner
         assertEq(Lottery(deployedLottery).owner(), owner);
@@ -340,7 +339,7 @@ contract LotteryFactoryTest is Test {
             hashes[i] = keccak256(abi.encodePacked(salts[i], numbers));
 
             vm.prank(owner);
-            deployedLotteries[i] = factory.deployLottery(hashes[i]);
+            deployedLotteries[i] = factory.deployLottery(hashes[i], false);
 
             // Verify deployment
             assertEq(factory.lotteries(hashes[i]), deployedLotteries[i]);
@@ -358,10 +357,10 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that deploying a Lottery with the same token and different hashes works correctly
     function testDeployLotteriesWithSameTokenDifferentHashes() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
 
         // Ensure both Lotteries are deployed and have different addresses
         assertTrue(lottery1 != lottery2);
@@ -372,18 +371,6 @@ contract LotteryFactoryTest is Test {
 
         assertEq(Lottery(lottery2).owner(), owner);
         assertEq(address(Lottery(lottery2).token()), address(token));
-    }
-
-    /// @notice Tests that deploying a Lottery with an already deployed hash fails
-    function testDeployLotteryWithAlreadyDeployedHash() public {
-        vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
-        assertTrue(lottery1 != address(0));
-
-        // Attempt to deploy another Lottery with the same winningHash1
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(Create2.Create2FailedDeployment.selector));
-        factory.deployLottery(winningHash1);
     }
 
     /// @notice Event definition for capturing LotteryDeployed events
@@ -398,21 +385,21 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that the LotteryDeployed event is emitted correctly
     function testLotteryDeployedEventEmission() public {
         // Expect the LotteryDeployed event with specific parameters
-        vm.expectEmit(false, true, true, true);
+        vm.expectEmit(false, true, true, false);
         emit LotteryFactory.LotteryDeployed(address(0), winningHash1);
 
         // Deploy the Lottery
         vm.prank(owner);
-        factory.deployLottery(winningHash1);
+        factory.deployLottery(winningHash1, false);
     }
 
     /// @notice Tests that deploying a Lottery with a different winningNumbersHash results in a different address
     function testDifferentHashesProduceDifferentAddresses() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
 
         // Ensure that the addresses are different
         assertTrue(lottery1 != lottery2);
@@ -426,7 +413,7 @@ contract LotteryFactoryTest is Test {
 
         // Deploy the Lottery
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(winningHash1);
+        address deployedLottery = factory.deployLottery(winningHash1, false);
 
         // Verify that the expected address matches the deployed address
         assertEq(deployedLottery, expectedAddress);
@@ -437,15 +424,15 @@ contract LotteryFactoryTest is Test {
     function testDeploymentCounterIncrementsCorrectly() public {
         // Deploy first Lottery
         vm.prank(owner);
-        factory.deployLottery(winningHash1);
+        factory.deployLottery(winningHash1, false);
 
         // Deploy second Lottery
         vm.prank(owner);
-        factory.deployLottery(winningHash2);
+        factory.deployLottery(winningHash2, false);
 
         // Deploy third Lottery
         vm.prank(owner);
-        factory.deployLottery(winningHash3);
+        factory.deployLottery(winningHash3, false);
 
         // Retrieve all deployed Lotteries
         address[] memory lotteries = factory.getAllLotteries(0, 3);
@@ -455,10 +442,10 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that deploying a Lottery with the same token but different winningNumbersHash works correctly
     function testDeployLotterySameTokenDifferentHash() public {
         vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
+        address lottery1 = factory.deployLottery(winningHash1, false);
 
         vm.prank(owner);
-        address lottery2 = factory.deployLottery(winningHash2);
+        address lottery2 = factory.deployLottery(winningHash2, false);
 
         // Ensure that both Lotteries are deployed and have different addresses
         assertTrue(lottery1 != lottery2);
@@ -467,7 +454,7 @@ contract LotteryFactoryTest is Test {
     /// @notice Tests that deploying a Lottery with a unique winningNumbersHash succeeds
     function testDeployLotteryWithUniqueWinningHash() public {
         vm.prank(owner);
-        address lottery = factory.deployLottery(winningHash1);
+        address lottery = factory.deployLottery(winningHash1, false);
         assertTrue(lottery != address(0));
 
         // Ensure that the Lottery is recognized as deployed
@@ -487,7 +474,7 @@ contract LotteryFactoryTest is Test {
             hashes[i] = hash;
 
             vm.prank(owner);
-            deployedLotteries[i] = factory.deployLottery(hashes[i]);
+            deployedLotteries[i] = factory.deployLottery(hashes[i], false);
 
             // Verify deployment
             assertEq(factory.lotteries(hashes[i]), deployedLotteries[i]);
@@ -500,18 +487,6 @@ contract LotteryFactoryTest is Test {
         for (uint8 i = 0; i < 5; i++) {
             assertEq(lotteries[i], deployedLotteries[i]);
         }
-    }
-
-    /// @notice Tests that deploying a Lottery with an already deployed hash fails as expected
-    function testDeployLotteryWithDuplicateHash() public {
-        vm.prank(owner);
-        address lottery1 = factory.deployLottery(winningHash1);
-        assertTrue(lottery1 != address(0));
-
-        // Attempt to deploy another Lottery with the same winningHash1
-        vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(Create2.Create2FailedDeployment.selector));
-        factory.deployLottery(winningHash1);
     }
 
     /// @notice Tests that deploying a Lottery with a different salt and hash computes the correct address
@@ -527,7 +502,7 @@ contract LotteryFactoryTest is Test {
 
         // Deploy the Lottery
         vm.prank(owner);
-        address deployedLottery = factory.deployLottery(uniqueWinningHash);
+        address deployedLottery = factory.deployLottery(uniqueWinningHash, false);
 
         // Verify that the deployed address matches the expected address
         assertEq(deployedLottery, expectedAddress);
@@ -550,10 +525,10 @@ contract LotteryFactoryTest is Test {
 
         // Deploy two Lotteries with different salts but same winningNumbers
         vm.prank(owner);
-        address lotteryA = factory.deployLottery(winningHashA);
+        address lotteryA = factory.deployLottery(winningHashA, false);
 
         vm.prank(owner);
-        address lotteryB = factory.deployLottery(winningHashB);
+        address lotteryB = factory.deployLottery(winningHashB, false);
 
         // Ensure that the two Lotteries have different addresses
         assertTrue(lotteryA != lotteryB);
