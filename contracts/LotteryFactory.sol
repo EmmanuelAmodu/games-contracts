@@ -6,11 +6,12 @@ import "@openzeppelin/contracts/utils/Create2.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./Lottery.sol";
 import "./interfaces/IContractRegistry.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title LotteryFactory
 /// @author Emmanuel Amodu
 /// @notice This contract deploys Lottery contracts using CREATE2 for deterministic addresses.
-contract LotteryFactory is Ownable {
+contract LotteryFactory is Ownable, ReentrancyGuard {
     // Event emitted when a new Lottery contract is deployed
     event LotteryDeployed(
         address indexed lotteryAddress,
@@ -60,7 +61,7 @@ contract LotteryFactory is Ownable {
     function deployLottery(
         bytes32 _winningNumbersHash,
         bool checkRunningLottery
-    ) external onlyOwner returns (address lotteryAddress) {
+    ) external onlyOwner nonReentrant returns (address lotteryAddress) {
         require(tokenAddress != address(0), "Token address cannot be zero");
         require(
             _winningNumbersHash != bytes32(0),
@@ -118,9 +119,16 @@ contract LotteryFactory is Ownable {
         bytes32 salt,
         uint8[5] calldata numbers,
         bytes32 newRoot
-    ) external onlyOwner {
+    ) external onlyOwner nonReentrant {
         address lottery = lotteries[winningNumbersHash];
         Lottery(lottery).revealWinningNumbers(salt, numbers, newRoot);
+    }
+
+
+    /// @notice Updates the address of the ContractRegistry contract
+    /// @param _contractRegistry The address of the ContractRegistry contract
+    function updateContractRegistry(address _contractRegistry) external onlyOwner nonReentrant {
+        contractRegistry = IContractRegistry(_contractRegistry);
     }
 
     /// @notice Computes the address of a Lottery contract to be deployed with given parameters
